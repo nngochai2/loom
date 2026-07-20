@@ -36,6 +36,7 @@ class ExplicitEdge:
     from_id: str
     to_id: str
     type: str
+    properties: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,8 @@ class Entity:
     id: str
     type: str
     name: str
+    origin: Origin
+    rule_id: str | None = None
     properties: dict[str, object] = field(default_factory=dict)
 
 
@@ -63,14 +66,21 @@ class Relationship:
     type: str
     origin: Origin
     rule_id: str | None = None
+    properties: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ExtractionResult:
     """Output of extraction + rule engine for one document; the shape
-    `SinkAdapter.write()` consumes and `DryRunSink` collects verbatim."""
+    `SinkAdapter.write()` consumes and `DryRunSink` collects verbatim.
+
+    `content_hash` travels with the result (not as a separate `write()`
+    parameter) so a sink can stamp the spec §5 mandatory properties from
+    `result` alone, matching `SinkAdapter.write(doc_id, result)`'s signature.
+    """
 
     doc_id: str
+    content_hash: str = ""
     entities: tuple[Entity, ...] = ()
     relationships: tuple[Relationship, ...] = ()
 

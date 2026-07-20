@@ -25,7 +25,7 @@ jobs:
         run: uv pip install --system -e ".[dev]"
 
       - name: Type-check (mypy)
-        run: mypy app
+        run: mypy app cli.py
 
       - name: Test (pytest)
         run: pytest

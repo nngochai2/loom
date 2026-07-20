@@ -1,5 +1,3 @@
-import pytest
-
 from app.pipeline.core import Pipeline
 from app.pipeline.sinks.base import SinkAdapter, SinkType
 from app.pipeline.sources.base import SourceAdapter
@@ -14,6 +12,9 @@ class FakeSource:
 
     def load(self, doc: SourceDoc) -> LoadedDoc:
         return LoadedDoc(doc=doc, content="hello")
+
+    def extract(self, loaded: LoadedDoc, config: object) -> ExtractionResult:
+        return ExtractionResult(doc_id=loaded.doc.doc_id)
 
 
 class FakeSink:
@@ -34,13 +35,16 @@ def test_fake_sink_satisfies_sink_adapter_protocol():
     assert isinstance(FakeSink(), SinkAdapter)
 
 
-def test_pipeline_run_matches_spec_signature_and_is_not_yet_implemented():
+def test_pipeline_run_accepts_protocol_conformant_source_and_sink():
+    # Behavioral coverage of Pipeline.run lives in test_pipeline_run.py; this
+    # just confirms real SourceAdapter/SinkAdapter implementations wire
+    # together against the spec §4.1 signature without a type mismatch.
     pipeline = Pipeline()
-    with pytest.raises(NotImplementedError):
-        pipeline.run(
-            source=FakeSource(),
-            source_path="./fixtures/vault",
-            sinks=[FakeSink()],
-            config=None,
-            progress=lambda doc_id, fraction: None,
-        )
+    result = pipeline.run(
+        source=FakeSource(),
+        source_path="./fixtures/vault",
+        sinks=[FakeSink()],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+    )
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]

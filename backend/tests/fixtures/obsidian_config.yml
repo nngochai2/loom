@@ -1,0 +1,43 @@
+include_folders:
+  - "Project"
+tags_folder: "Tags"
+main_folder: "Project"
+subfolder_type_map:
+  architecture: ARCHITECTURE
+  tasks: TASK
+  conventions: CONVENTION
+  business: BUSINESS_TERM
+type_signals:
+  TASK:
+    - bug
+    - fix
+    - ticket
+    - issue
+  ARCHITECTURE:
+    - service
+    - api
+    - database
+    - gateway
+  CONVENTION:
+    - convention
+    - pattern
+    - standard
+    - guideline
+  BUSINESS_TERM:
+    - definition
+    - glossary
+    - term
+    - domain
+rel_keywords:
+  "depends on": DEPENDS_ON
+  "extends": EXTENDS
+  "uses": USES
+  "connects to": CONNECTS_TO
+  "implements": IMPLEMENTS
+  "see also": RELATES_TO
+  "related to": RELATES_TO
+  "fixes": FIXES
+  "resolves": RESOLVES
+  "caused by": CAUSED_BY
+  "follows": FOLLOWS
+  "violates": VIOLATES

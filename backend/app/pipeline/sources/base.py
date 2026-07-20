@@ -1,6 +1,6 @@
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from app.pipeline.types import LoadedDoc, SourceDoc
+from app.pipeline.types import ExtractionResult, LoadedDoc, SourceDoc
 
 
 @runtime_checkable
@@ -16,5 +16,16 @@ class SourceAdapter(Protocol):
 
         For Obsidian: wikilinks are emitted as explicit edges here, tagged
         origin='explicit' — they bypass extraction inference.
+        """
+        ...
+
+    def extract(self, loaded: LoadedDoc, config: Any) -> ExtractionResult:
+        """Turn a loaded document into entities/relationships.
+
+        Not in the spec's original two-method sketch — added because
+        Obsidian's wikilink-target resolution needs cross-document state
+        (a title -> node_id map built once per vault in `discover()`) that
+        only the adapter instance can hold. Docx implements this too, just
+        without needing that state.
         """
         ...
