@@ -1,0 +1,29 @@
+[project]
+name = "loom-backend"
+version = "0.1.0"
+description = "Loom backend: document/vault ingestion pipeline into Neo4j and ChromaDB"
+requires-python = ">=3.11"
+dependencies = [
+    "neo4j>=5.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.11",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["app"]
+strict = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

@@ -1,0 +1,66 @@
+{
+  "entity_types": [
+    "ARCHITECTURE",
+    "CONVENTION",
+    "TASK",
+    "BUSINESS_TERM",
+    "NOTE",
+    "TAG"
+  ],
+  "relationship_types": [
+    "DEPENDS_ON",
+    "EXTENDS",
+    "USES",
+    "CONNECTS_TO",
+    "IMPLEMENTS",
+    "RELATES_TO",
+    "FIXES",
+    "RESOLVES",
+    "CAUSED_BY",
+    "FOLLOWS",
+    "VIOLATES",
+    "LINKS_TO",
+    "TAGGED_WITH"
+  ],
+  "default_relationship_type": "LINKS_TO",
+  "mandatory_properties": [
+    {
+      "name": "origin",
+      "type": "string",
+      "values": ["extracted", "explicit", "curated"]
+    },
+    {
+      "name": "source_doc",
+      "type": "string",
+      "description": "doc_id of originating document",
+      "absent_for_origins": ["curated"]
+    },
+    {
+      "name": "content_hash",
+      "type": "string",
+      "description": "hash of source doc at write time",
+      "absent_for_origins": ["curated"]
+    },
+    {
+      "name": "rule_id",
+      "type": "string",
+      "description": "id of the parsing rule that produced it",
+      "absent_for_origins": ["explicit", "curated"]
+    },
+    {
+      "name": "schema_version",
+      "type": "string",
+      "description": "value of kg-schema/VERSION at write time"
+    },
+    {
+      "name": "created_at",
+      "type": "string",
+      "format": "date-time"
+    },
+    {
+      "name": "updated_at",
+      "type": "string",
+      "format": "date-time"
+    }
+  ]
+}
