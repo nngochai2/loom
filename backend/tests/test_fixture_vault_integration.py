@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.pipeline.core import Pipeline
 from app.pipeline.sources.obsidian import ObsidianSourceAdapter, load_config
-from app.pipeline.types import ExtractionResult, SinkReport
+from app.pipeline.types import DeleteReport, ExtractionResult, SinkReport
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 VAULT = FIXTURES / "vault"
@@ -25,8 +25,8 @@ class RecordingSink:
         self.results[doc_id] = result
         return SinkReport(sink_type=self.sink_type)
 
-    def delete_non_curated_for_doc(self, doc_id: str) -> int:
-        return 0
+    def delete_non_curated_for_doc(self, doc_id: str) -> DeleteReport:
+        return DeleteReport(deleted_count=0)
 
 
 def _run():

@@ -105,6 +105,20 @@ class OrphanFlag:
 
 
 @dataclass(frozen=True)
+class DeleteReport:
+    """Return shape of `SinkAdapter.delete_non_curated_for_doc` (§6.1, §6.2).
+
+    A bare `int` count couldn't carry *which* curated edges the delete left
+    resting on now-gone content — `deleted_count` keeps the old signal,
+    `orphans` carries the new one so `Pipeline.run` can fold it straight
+    into `JobResult.orphans` without a second query round-trip of its own.
+    """
+
+    deleted_count: int
+    orphans: tuple[OrphanFlag, ...] = ()
+
+
+@dataclass(frozen=True)
 class DocStatus:
     doc_id: str
     outcome: DocOutcome

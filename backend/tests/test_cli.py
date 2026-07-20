@@ -13,7 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import cli
-from app.pipeline.types import ExtractionResult, SinkReport
+from app.pipeline.types import DeleteReport, ExtractionResult, SinkReport
 
 
 class RecordingSink:
@@ -27,9 +27,9 @@ class RecordingSink:
         self.writes.append((doc_id, result))
         return SinkReport(sink_type=self.sink_type)
 
-    def delete_non_curated_for_doc(self, doc_id: str) -> int:
+    def delete_non_curated_for_doc(self, doc_id: str) -> DeleteReport:
         self.deletes.append(doc_id)
-        return 0
+        return DeleteReport(deleted_count=0)
 
 
 def _write_vault(tmp_path):
@@ -157,3 +157,72 @@ def test_parse_args_rejects_unknown_source():
         cli.parse_args(
             ["ingest", "--source", "xlsx", "--path", ".", "--sink", "neo4j", "--config", "x.yml"]
         )
+
+
+def test_parse_args_db_defaults_to_none_for_a_one_shot_full_ingest():
+    args = cli.parse_args(
+        ["ingest", "--source", "obsidian", "--path", ".", "--sink", "neo4j", "--config", "x.yml"]
+    )
+
+    assert args.db is None
+
+
+# --- --db wiring: incremental re-ingestion (spec §6.1) end-to-end through the CLI ---
+
+
+def test_run_ingest_with_db_reports_all_skipped_and_writes_nothing_on_an_unchanged_rerun(tmp_path):
+    vault = _write_vault(tmp_path)
+    config_path = _write_config(tmp_path)
+    db_path = tmp_path / "loom.sqlite3"
+
+    def _ingest(sink: RecordingSink) -> int:
+        args = cli.parse_args(
+            [
+                "ingest",
+                "--source",
+                "obsidian",
+                "--path",
+                str(vault),
+                "--sink",
+                "neo4j",
+                "--config",
+                str(config_path),
+                "--db",
+                str(db_path),
+            ]
+        )
+        return cli.run_ingest(args, sinks={"neo4j": lambda: sink})
+
+    first_sink = RecordingSink()
+    assert _ingest(first_sink) == 0
+    assert len(first_sink.writes) == 2
+
+    second_sink = RecordingSink()
+    assert _ingest(second_sink) == 0
+    assert second_sink.writes == []
+    assert second_sink.deletes == []
+
+
+def test_run_ingest_without_db_does_not_persist_a_hash_table(tmp_path):
+    # Omitting --db must not create incremental state anywhere the next
+    # command-line run (with or without --db) could pick up by accident.
+    vault = _write_vault(tmp_path)
+    config_path = _write_config(tmp_path)
+    sink = RecordingSink()
+
+    args = cli.parse_args(
+        [
+            "ingest",
+            "--source",
+            "obsidian",
+            "--path",
+            str(vault),
+            "--sink",
+            "neo4j",
+            "--config",
+            str(config_path),
+        ]
+    )
+    cli.run_ingest(args, sinks={"neo4j": lambda: sink})
+
+    assert not (tmp_path / "loom.sqlite3").exists()

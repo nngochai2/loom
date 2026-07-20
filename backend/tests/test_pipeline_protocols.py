@@ -1,7 +1,7 @@
 from app.pipeline.core import Pipeline
 from app.pipeline.sinks.base import SinkAdapter, SinkType
 from app.pipeline.sources.base import SourceAdapter
-from app.pipeline.types import ExtractionResult, LoadedDoc, SinkReport, SourceDoc
+from app.pipeline.types import DeleteReport, ExtractionResult, LoadedDoc, SinkReport, SourceDoc
 
 
 class FakeSource:
@@ -23,8 +23,8 @@ class FakeSink:
     def write(self, doc_id: str, result: ExtractionResult) -> SinkReport:
         return SinkReport(sink_type=self.sink_type)
 
-    def delete_non_curated_for_doc(self, doc_id: str) -> int:
-        return 0
+    def delete_non_curated_for_doc(self, doc_id: str) -> DeleteReport:
+        return DeleteReport(deleted_count=0)
 
 
 def test_fake_source_satisfies_source_adapter_protocol():
