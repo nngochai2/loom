@@ -5,7 +5,8 @@
     "TASK",
     "BUSINESS_TERM",
     "NOTE",
-    "TAG"
+    "TAG",
+    "REQUIREMENT"
   ],
   "relationship_types": [
     "DEPENDS_ON",

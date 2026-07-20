@@ -1,0 +1,55 @@
+# Fixture parsing rule for Business Requirements extracted from FDD/SDD-style
+# .docx files. Generic re-derivation of NAA's br_requirements.yml (ADR-0001)
+# with the project-specific "BR" node_label swapped for kg-schema's generic
+# REQUIREMENT entity type (ADR-0006) and stable `id` fields added to every
+# category_signal/named_extraction entry (ADR-0005).
+
+name: "Business Requirements (fixture)"
+node_label: REQUIREMENT
+
+# ── Requirement row identification ──────────────────────────────────────────
+id_pattern: '^BR\s*(\d+)$'
+id_flags: IGNORECASE
+id_format: 'BR{:02d}'
+
+# ── Title extraction ─────────────────────────────────────────────────────────
+title_from: first_line
+
+# ── Category inference ───────────────────────────────────────────────────────
+category_signals:
+  - id: cs-sql-view
+    name: SQLView
+    pattern: '\bVW_[A-Z_]+\b'
+
+  - id: cs-batch-job
+    name: BatchJob
+    pattern: '\bbatch\s*job\b|\bschedule[dr]?\b'
+    flags: IGNORECASE
+
+  - id: cs-java
+    name: Java
+    pattern: '\bjava\b|\brest[\s\-]?api\b|\bmicroservice\b'
+    flags: IGNORECASE
+
+# ── Named extractions ─────────────────────────────────────────────────────────
+named_extractions:
+  - id: ne-views
+    name: views
+    pattern: '\bVW_[A-Z_]+\b'
+    flags: IGNORECASE
+    transform: uppercase
+    deduplicate: true
+    sort: true
+
+  - id: ne-fields
+    name: fields
+    pattern: '"([^"]{3,60})"'
+    group: 1
+    filter: no_spaces
+    deduplicate: true
+    sort: true
+
+# ── Document-level context ────────────────────────────────────────────────────
+context:
+  include_paragraphs: true
+  include_non_br_tables: true

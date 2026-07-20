@@ -2,6 +2,9 @@
 
     python cli.py ingest --source obsidian --path ./fixtures/vault \\
         --sink neo4j --config default.yml
+
+    python cli.py ingest --source docx --path ./fixtures/docs \\
+        --sink neo4j --config br_requirements.yml
 """
 
 from __future__ import annotations
@@ -14,12 +17,15 @@ from app.pipeline.core import Pipeline
 from app.pipeline.sinks.base import SinkAdapter
 from app.pipeline.sinks.neo4j import Neo4jSink
 from app.pipeline.sources.base import SourceAdapter
+from app.pipeline.sources.docx import DocxSourceAdapter
+from app.pipeline.sources.docx import load_config as load_docx_config
 from app.pipeline.sources.obsidian import ObsidianSourceAdapter
 from app.pipeline.sources.obsidian import load_config as load_obsidian_config
 
-# One entry per source_type; docx registers here too once its ticket lands.
+# One entry per source_type.
 SOURCES: dict[str, tuple[type, Callable[[str], Any]]] = {
     "obsidian": (ObsidianSourceAdapter, load_obsidian_config),
+    "docx": (DocxSourceAdapter, load_docx_config),
 }
 
 # One entry per sink_type; chroma registers here once its ticket lands.

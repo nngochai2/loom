@@ -124,6 +124,32 @@ def test_run_ingest_returns_nonzero_exit_code_on_failed_docs(tmp_path, monkeypat
     assert sink.writes == []
 
 
+def test_run_ingest_processes_docx_fixtures_via_registered_sink():
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    sink = RecordingSink()
+
+    args = cli.parse_args(
+        [
+            "ingest",
+            "--source",
+            "docx",
+            "--path",
+            str(fixtures_dir / "docs"),
+            "--sink",
+            "neo4j",
+            "--config",
+            str(fixtures_dir / "br_requirements.yml"),
+        ]
+    )
+
+    exit_code = cli.run_ingest(args, sinks={"neo4j": lambda: sink})
+
+    assert exit_code == 0
+    assert len(sink.writes) == 3  # plain_prose, with_tables, zero_extraction
+    entity_counts = {doc_id: len(result.entities) for doc_id, result in sink.writes}
+    assert sorted(entity_counts.values()) == [0, 0, 2]
+
+
 def test_parse_args_rejects_unknown_source():
     import pytest
 
