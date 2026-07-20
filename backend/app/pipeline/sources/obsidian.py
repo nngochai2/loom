@@ -222,7 +222,11 @@ class ObsidianSourceAdapter:
                 continue
 
             relative_path = f.relative_to(vault_root)
-            doc_id = hashlib.sha1(str(relative_path).encode()).hexdigest()[:16]
+            # .as_posix() (not str()) so doc_id is stable across OSes -- a
+            # vault ingested on Windows and later re-ingested from the same
+            # path on Linux (or vice versa) must hash identically, or the
+            # skip/re-ingest logic (spec §6) would treat every doc as new.
+            doc_id = hashlib.sha1(relative_path.as_posix().encode()).hexdigest()[:16]
             if top_folder == self.config.tags_folder:
                 content_hash = hashlib.md5(f.stem.encode()).hexdigest()
             else:

@@ -1,0 +1,45 @@
+{
+  "plain_prose.docx": {
+    "entities": []
+  },
+  "with_tables.docx": {
+    "entities": [
+      {
+        "body": "The system must read invoice data from VW_INVOICE_HDR during the nightly batch job. Field \"INVOICE_DATE\" must be captured.",
+        "candidate_categories": [
+          "BatchJob",
+          "SQLView"
+        ],
+        "named_extractions": {
+          "fields": [
+            "INVOICE_DATE"
+          ],
+          "views": [
+            "VW_INVOICE_HDR"
+          ]
+        },
+        "req_id": "BR01",
+        "source_file": "with_tables.docx",
+        "title": "The system must read invoice data from VW_INVOICE_HDR during the nightly batch job. Field \"INVOICE_DATE\" must be captured.",
+        "type": "REQUIREMENT"
+      },
+      {
+        "body": "The system must expose a Java REST API for downstream posting systems to consume.",
+        "candidate_categories": [
+          "Java"
+        ],
+        "named_extractions": {
+          "fields": [],
+          "views": []
+        },
+        "req_id": "BR02",
+        "source_file": "with_tables.docx",
+        "title": "The system must expose a Java REST API for downstream posting systems to consume.",
+        "type": "REQUIREMENT"
+      }
+    ]
+  },
+  "zero_extraction.docx": {
+    "entities": []
+  }
+}
