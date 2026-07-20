@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from app.jobs.store import connect
+from app.jobs.store import HashStore, connect
 
 
 @pytest.fixture()
@@ -92,3 +92,66 @@ def test_connect_is_idempotent_across_repeated_calls(tmp_path):
     )
     conn2.commit()
     conn2.close()
+
+
+# --- HashStore: the narrow seam Pipeline.run uses for incremental re-ingestion
+# (spec §6.1) instead of holding a bare sqlite3.Connection + raw SQL itself. ---
+
+
+def test_hash_store_get_hash_returns_none_for_unseen_doc(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    assert store.get_hash("obsidian", "never-seen.md") is None
+
+
+def test_hash_store_set_then_get_round_trips(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    store.set_hash("obsidian", "note1.md", "hash-abc", "2026-07-20T00:00:00Z")
+
+    assert store.get_hash("obsidian", "note1.md") == "hash-abc"
+
+
+def test_hash_store_set_hash_upserts_on_repeated_calls(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    store.set_hash("obsidian", "note1.md", "hash-1", "t1")
+    store.set_hash("obsidian", "note1.md", "hash-2", "t2")
+
+    assert store.get_hash("obsidian", "note1.md") == "hash-2"
+    rows = conn.execute("SELECT COUNT(*) FROM doc_hashes").fetchone()
+    assert rows[0] == 1  # no duplicate row under the same (source_type, doc_id)
+
+
+def test_hash_store_scopes_get_hash_by_source_type(conn: sqlite3.Connection):
+    store = HashStore(conn)
+    store.set_hash("obsidian", "shared-id", "hash-obsidian", "t")
+    store.set_hash("docx", "shared-id", "hash-docx", "t")
+
+    assert store.get_hash("obsidian", "shared-id") == "hash-obsidian"
+    assert store.get_hash("docx", "shared-id") == "hash-docx"
+
+
+def test_hash_store_delete_hash_removes_the_row(conn: sqlite3.Connection):
+    store = HashStore(conn)
+    store.set_hash("obsidian", "note1.md", "hash-abc", "t")
+
+    store.delete_hash("obsidian", "note1.md")
+
+    assert store.get_hash("obsidian", "note1.md") is None
+
+
+def test_hash_store_delete_hash_on_unseen_doc_is_a_no_op(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    store.delete_hash("obsidian", "never-seen.md")  # must not raise
+
+
+def test_hash_store_doc_ids_for_source_returns_only_that_sources_ids(conn: sqlite3.Connection):
+    store = HashStore(conn)
+    store.set_hash("obsidian", "a.md", "h1", "t")
+    store.set_hash("obsidian", "b.md", "h2", "t")
+    store.set_hash("docx", "c.docx", "h3", "t")
+
+    assert store.doc_ids_for_source("obsidian") == {"a.md", "b.md"}
+    assert store.doc_ids_for_source("docx") == {"c.docx"}

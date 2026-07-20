@@ -15,11 +15,18 @@ _kg = importlib.import_module("kg-schema")
 
 
 class FakeResult:
-    def __init__(self, record=None):
+    def __init__(self, record=None, records=None):
         self._record = record
+        # Real `neo4j.Result` is iterable (yields `Record`s); orphan
+        # detection iterates rather than calling `.single()`, so this fake
+        # needs to support both call shapes. Defaults to no rows.
+        self._records = records if records is not None else []
 
     def single(self):
         return self._record
+
+    def __iter__(self):
+        return iter(self._records)
 
 
 class FakeSession:
@@ -190,6 +197,87 @@ def test_delete_non_curated_node_query_protects_nodes_with_curated_relationships
     node_query = next(c for c, _ in driver.session_obj.queries if "DETACH DELETE n" in c)
     assert "curated" in node_query
     assert "NOT EXISTS" in node_query
+
+
+def test_relationship_write_does_not_unconditionally_clobber_curated_origin():
+    # Real bug (issue #5): re-ingesting a doc whose extraction reproduces a
+    # curated edge (same endpoints+type) used to silently SET r.origin back
+    # to 'extracted', destroying curated immunity on write, not just on
+    # delete (spec §6.2). ON MATCH must be conditioned on the *existing*
+    # relationship's origin, and ON CREATE must still set properties
+    # unconditionally for a brand-new relationship.
+    driver = FakeDriver()
+    sink = Neo4jSink(driver=driver)
+    result = ExtractionResult(
+        doc_id="doc1",
+        content_hash="hash1",
+        relationships=(_relationship("n1", "n2"),),
+    )
+
+    sink.write("doc1", result)
+
+    cypher, _ = driver.session_obj.queries[0]
+    assert "ON CREATE SET" in cypher
+    assert "ON MATCH" not in cypher or "curated" in cypher
+    # The write must gate its property overwrite on whether the pre-existing
+    # relationship is already curated -- some conditional construct
+    # referencing r.origin has to appear outside of ON CREATE.
+    on_create_idx = cypher.index("ON CREATE SET")
+    on_create_end = cypher.index("\n\n") if "\n\n" in cypher else len(cypher)
+    rest = cypher[on_create_idx:]
+    assert "curated" in rest
+
+
+def test_delete_non_curated_for_doc_returns_a_delete_report():
+    driver = FakeDriver()
+    sink = Neo4jSink(driver=driver)
+
+    report = sink.delete_non_curated_for_doc("doc1")
+
+    assert report.deleted_count == 0
+    assert report.orphans == ()
+
+
+def test_delete_non_curated_for_doc_counts_deleted_relationships_and_nodes():
+    rel_result = FakeResult(record={"c": 2})
+    node_result = FakeResult(record={"c": 1})
+    driver = FakeDriver(run_results=[rel_result, FakeResult(), node_result])
+    sink = Neo4jSink(driver=driver)
+
+    report = sink.delete_non_curated_for_doc("doc1")
+
+    assert report.deleted_count == 3
+
+
+def test_delete_non_curated_for_doc_runs_an_orphan_detection_query():
+    driver = FakeDriver()
+    sink = Neo4jSink(driver=driver)
+
+    sink.delete_non_curated_for_doc("doc1")
+
+    queries = driver.session_obj.queries
+    orphan_query = next(cypher for cypher, _ in queries if "elementId" in cypher)
+    assert "curated" in orphan_query
+    assert "doc1" not in orphan_query  # doc_id travels as a bound param, not inline
+    # Spec §6.3: the edge is marked orphaned in the graph, not just reported
+    # back through JobResult -- so the Graph page can style it later.
+    assert "SET cr.orphaned = true" in orphan_query
+    # Must run before the protective node delete, since the delete changes
+    # which nodes/edges are still "attached" to doc_id.
+    detach_idx = next(i for i, (c, _) in enumerate(queries) if "DETACH DELETE n" in c)
+    orphan_idx = next(i for i, (c, _) in enumerate(queries) if "elementId" in c)
+    assert orphan_idx < detach_idx
+
+
+def test_delete_non_curated_for_doc_surfaces_orphan_flags_from_the_query():
+    orphan_result = FakeResult(records=[{"edge_id": "4:abc:1"}, {"edge_id": "4:abc:2"}])
+    driver = FakeDriver(run_results=[FakeResult(record={"c": 0}), orphan_result, FakeResult(record={"c": 0})])
+    sink = Neo4jSink(driver=driver)
+
+    report = sink.delete_non_curated_for_doc("doc1")
+
+    assert {o.edge_id for o in report.orphans} == {"4:abc:1", "4:abc:2"}
+    assert all(o.reason for o in report.orphans)
 
 
 def test_entity_write_removes_stale_entity_labels_before_setting_the_new_one():
