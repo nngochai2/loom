@@ -69,7 +69,9 @@ class DocxSourceAdapter:
             if f.name.startswith("~$"):
                 continue  # Word's transient lock file for an open document
             relative_path = f.relative_to(root)
-            doc_id = hashlib.sha1(str(relative_path).encode()).hexdigest()[:16]
+            # .as_posix() (not str()) so doc_id is stable across OSes, same
+            # reasoning as ObsidianSourceAdapter.discover().
+            doc_id = hashlib.sha1(relative_path.as_posix().encode()).hexdigest()[:16]
             content_hash = hashlib.md5(f.read_bytes()).hexdigest()
             docs.append(SourceDoc(doc_id=doc_id, path=str(f), content_hash=content_hash))
         return docs

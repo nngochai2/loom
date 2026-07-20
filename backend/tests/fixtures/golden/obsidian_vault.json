@@ -1,0 +1,177 @@
+{
+  "edges": [
+    {
+      "alias": "Token Format Convention",
+      "context": "finition of a \"session\" as used across [[Auth Service]] and [[Token Format Convention]].",
+      "from_id": "07ad05c1e981eea3",
+      "to_id": "33bab1127c23aa47",
+      "type": "LINKS_TO"
+    },
+    {
+      "alias": "Auth Service",
+      "context": "Domain glossary definition of a \"session\" as used across [[Auth Service]] and [[Token Format Convention]].",
+      "from_id": "07ad05c1e981eea3",
+      "to_id": "61e6f8ff245aa497",
+      "type": "LINKS_TO"
+    },
+    {
+      "alias": "Auth Service",
+      "context": "The gateway connects to [[Auth Service]] and to [[User Database]].",
+      "from_id": "2f7ba5bc7be549be",
+      "to_id": "61e6f8ff245aa497",
+      "type": "CONNECTS_TO"
+    },
+    {
+      "alias": "User Database",
+      "context": "The gateway connects to [[Auth Service]] and to [[User Database]].",
+      "from_id": "2f7ba5bc7be549be",
+      "to_id": "7313e87fbf0782bb",
+      "type": "CONNECTS_TO"
+    },
+    {
+      "alias": "Auth Service",
+      "context": "g convention and format standard for session tokens used by [[Auth Service]].",
+      "from_id": "33bab1127c23aa47",
+      "to_id": "61e6f8ff245aa497",
+      "type": "LINKS_TO"
+    },
+    {
+      "alias": "API Gateway",
+      "context": "This service depends on [[API Gateway]] for request routing and implements the [[Token Format Conve",
+      "from_id": "61e6f8ff245aa497",
+      "to_id": "2f7ba5bc7be549be",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "alias": "Token Format Convention",
+      "context": "s on [[API Gateway]] for request routing and implements the [[Token Format Convention]] for issuing session tokens.",
+      "from_id": "61e6f8ff245aa497",
+      "to_id": "33bab1127c23aa47",
+      "type": "IMPLEMENTS"
+    },
+    {
+      "alias": "Fix Login Bug",
+      "context": " note: opened a ticket to track the login issue, related to [[Fix Login Bug]]. Will follow up with the on-call engineer tomorrow.",
+      "from_id": "7ecc93de4205be8b",
+      "to_id": "cf12bb4cfaf26753",
+      "type": "RELATES_TO"
+    },
+    {
+      "alias": "API Gateway",
+      "context": "ask depends on [[User Database]] being available before the [[API Gateway]] cutover, and follows [[Fix Login Bug]] in the rollout plan.",
+      "from_id": "b80e5e08ad6af335",
+      "to_id": "2f7ba5bc7be549be",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "alias": "User Database",
+      "context": "This task depends on [[User Database]] being available before the [[API Gateway]] cutover, and fol",
+      "from_id": "b80e5e08ad6af335",
+      "to_id": "7313e87fbf0782bb",
+      "type": "DEPENDS_ON"
+    },
+    {
+      "alias": "Fix Login Bug",
+      "context": "g available before the [[API Gateway]] cutover, and follows [[Fix Login Bug]] in the rollout plan.",
+      "from_id": "b80e5e08ad6af335",
+      "to_id": "cf12bb4cfaf26753",
+      "type": "FOLLOWS"
+    },
+    {
+      "alias": "API Gateway",
+      "context": "ug fixes a regression in [[Auth Service]] and was caused by [[API Gateway]] misrouting requests. See also [[Ghost Note]], which does no",
+      "from_id": "cf12bb4cfaf26753",
+      "to_id": "2f7ba5bc7be549be",
+      "type": "RELATES_TO"
+    },
+    {
+      "alias": "Auth Service",
+      "context": "This bug fixes a regression in [[Auth Service]] and was caused by [[API Gateway]] misrouting requests. See ",
+      "from_id": "cf12bb4cfaf26753",
+      "to_id": "61e6f8ff245aa497",
+      "type": "FIXES"
+    }
+  ],
+  "entities": [
+    {
+      "created_at": "",
+      "id": "07ad05c1e981eea3",
+      "name": "Session Glossary Term",
+      "status": "",
+      "subfolder": "Business",
+      "type": "BUSINESS_TERM"
+    },
+    {
+      "created_at": "",
+      "id": "2f7ba5bc7be549be",
+      "name": "API Gateway",
+      "status": "",
+      "subfolder": "Architecture",
+      "type": "ARCHITECTURE"
+    },
+    {
+      "created_at": "",
+      "id": "33bab1127c23aa47",
+      "name": "Token Format Convention",
+      "status": "",
+      "subfolder": "Conventions",
+      "type": "CONVENTION"
+    },
+    {
+      "created_at": "",
+      "id": "61e6f8ff245aa497",
+      "name": "Auth Service",
+      "status": "",
+      "subfolder": "Architecture",
+      "type": "ARCHITECTURE"
+    },
+    {
+      "created_at": "",
+      "id": "7313e87fbf0782bb",
+      "name": "User Database",
+      "status": "",
+      "subfolder": "Architecture",
+      "type": "ARCHITECTURE"
+    },
+    {
+      "created_at": "",
+      "id": "7ecc93de4205be8b",
+      "name": "Standup Notes",
+      "status": "",
+      "subfolder": "Notes",
+      "type": "TASK"
+    },
+    {
+      "created_at": "",
+      "id": "b80e5e08ad6af335",
+      "name": "Migrate Database",
+      "status": "",
+      "subfolder": "Tasks",
+      "type": "TASK"
+    },
+    {
+      "created_at": "",
+      "id": "c72c31223db4c294",
+      "name": "urgent",
+      "status": "",
+      "subfolder": "",
+      "type": "TAG"
+    },
+    {
+      "created_at": "",
+      "id": "cf12bb4cfaf26753",
+      "name": "Fix Login Bug",
+      "status": "",
+      "subfolder": "Tasks",
+      "type": "TASK"
+    },
+    {
+      "created_at": "",
+      "id": "d4552810e56f6225",
+      "name": "backend",
+      "status": "",
+      "subfolder": "",
+      "type": "TAG"
+    }
+  ]
+}
