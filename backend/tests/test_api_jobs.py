@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.pipeline.types import SourceDoc
-from tests.fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
+from fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
 
 
 class _NamedSource(ScriptedSource):

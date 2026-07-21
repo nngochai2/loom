@@ -9,7 +9,7 @@ import asyncio
 
 from app.jobs.runner import JobRunner
 from app.jobs.store import JobRow, connect
-from tests.fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
+from fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
 
 
 def _make_runner(source: object, sink: object) -> JobRunner:
