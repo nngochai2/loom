@@ -1,0 +1,139 @@
+"""The Jobs API router (spec §8): the FastAPI surface over `JobRunner`.
+
+    POST   /jobs              {source_type, source_path, sinks[], config_id} -> {job_id}
+    GET    /jobs               -> paginated job history
+    GET    /jobs/{id}          -> status, progress %, per-doc results
+    POST   /jobs/{id}/cancel
+
+Polling only — no SSE (spec §9: it has caused problems in the team's
+corporate proxy environment).
+
+`create_jobs_router` takes a `JobRunner` rather than reaching for global
+state, so tests can wire a fake source/sink registry through it exactly
+like `cli.run_ingest` does.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+from app.jobs.runner import JobRunner
+from app.jobs.store import JobRow
+
+
+class CreateJobRequest(BaseModel):
+    source_type: str
+    source_path: str
+    sinks: list[str]
+    config_id: str
+
+
+class CreateJobResponse(BaseModel):
+    job_id: str
+
+
+class DocStatusOut(BaseModel):
+    doc_id: str
+    outcome: str
+    error: str | None = None
+
+
+class OrphanFlagOut(BaseModel):
+    edge_id: str
+    reason: str
+
+
+class JobOut(BaseModel):
+    id: str
+    source_type: str
+    source_path: str
+    sinks: list[str]
+    config_id: str
+    status: str
+    progress: float
+    doc_statuses: list[DocStatusOut]
+    orphans: list[OrphanFlagOut]
+    error: str | None
+    created_at: str
+    updated_at: str
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobOut]
+    total: int
+    limit: int
+    offset: int
+
+
+def _to_job_out(row: JobRow) -> JobOut:
+    doc_statuses = row.result.doc_statuses if row.result is not None else []
+    orphans = row.result.orphans if row.result is not None else []
+    return JobOut(
+        id=row.id,
+        source_type=row.source_type,
+        source_path=row.source_path,
+        sinks=row.sinks,
+        config_id=row.config_id,
+        status=row.status,
+        progress=row.progress,
+        doc_statuses=[
+            DocStatusOut(doc_id=s.doc_id, outcome=s.outcome, error=s.error) for s in doc_statuses
+        ],
+        orphans=[OrphanFlagOut(edge_id=o.edge_id, reason=o.reason) for o in orphans],
+        error=row.error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def create_jobs_router(runner: JobRunner) -> APIRouter:
+    router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+    @router.post("", response_model=CreateJobResponse, status_code=201)
+    async def create_job(payload: CreateJobRequest) -> CreateJobResponse:
+        if payload.source_type not in runner.sources:
+            raise HTTPException(422, f"Unknown source_type: {payload.source_type!r}")
+        unknown_sinks = [s for s in payload.sinks if s not in runner.sinks]
+        if unknown_sinks:
+            raise HTTPException(422, f"Unknown sink(s): {', '.join(unknown_sinks)}")
+
+        job_id = await runner.start(
+            source_type=payload.source_type,
+            source_path=payload.source_path,
+            sink_types=payload.sinks,
+            config_id=payload.config_id,
+        )
+        return CreateJobResponse(job_id=job_id)
+
+    @router.get("", response_model=JobListResponse)
+    async def list_jobs(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> JobListResponse:
+        rows, total = runner.store.list_jobs(limit=limit, offset=offset)
+        return JobListResponse(
+            jobs=[_to_job_out(row) for row in rows], total=total, limit=limit, offset=offset
+        )
+
+    @router.get("/{job_id}", response_model=JobOut)
+    async def get_job(job_id: str) -> JobOut:
+        row = runner.store.get_job(job_id)
+        if row is None:
+            raise HTTPException(404, "Job not found")
+        return _to_job_out(row)
+
+    @router.post("/{job_id}/cancel", response_model=JobOut)
+    async def cancel_job(job_id: str) -> JobOut:
+        row = runner.store.get_job(job_id)
+        if row is None:
+            raise HTTPException(404, "Job not found")
+        if row.status not in ("pending", "running"):
+            raise HTTPException(409, f"Job is already {row.status}")
+
+        runner.cancel(job_id)
+        updated = runner.store.get_job(job_id)
+        assert updated is not None  # the row we just read can't vanish under us
+        return _to_job_out(updated)
+
+    return router

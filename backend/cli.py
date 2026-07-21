@@ -22,24 +22,9 @@ from typing import Any, Callable
 
 from app.jobs.store import HashStore, connect
 from app.pipeline.core import Pipeline
+from app.pipeline.registry import SINKS, SOURCES
 from app.pipeline.sinks.base import SinkAdapter
-from app.pipeline.sinks.neo4j import Neo4jSink
 from app.pipeline.sources.base import SourceAdapter
-from app.pipeline.sources.docx import DocxSourceAdapter
-from app.pipeline.sources.docx import load_config as load_docx_config
-from app.pipeline.sources.obsidian import ObsidianSourceAdapter
-from app.pipeline.sources.obsidian import load_config as load_obsidian_config
-
-# One entry per source_type.
-SOURCES: dict[str, tuple[type, Callable[[str], Any]]] = {
-    "obsidian": (ObsidianSourceAdapter, load_obsidian_config),
-    "docx": (DocxSourceAdapter, load_docx_config),
-}
-
-# One entry per sink_type; chroma registers here once its ticket lands.
-SINKS: dict[str, Callable[[], SinkAdapter]] = {
-    "neo4j": Neo4jSink,
-}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

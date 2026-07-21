@@ -346,6 +346,71 @@ def test_run_with_a_store_collects_orphan_flags_raised_by_doc_removal(store):
     assert result.orphans == [orphan]
 
 
+# --- Cancellation (spec §8): checked at doc boundaries only, so completed
+# docs are never rolled back and only not-yet-started docs are skipped. ---
+
+
+def test_run_stops_before_a_doc_once_should_cancel_returns_true():
+    docs = [_doc("a"), _doc("b"), _doc("c")]
+    source = ScriptedSource(docs)
+    sink = RecordingSink()
+    cancel_after = {"count": 0}
+
+    def should_cancel() -> bool:
+        cancel_after["count"] += 1
+        return cancel_after["count"] > 1  # cancel right after doc "a" starts
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        should_cancel=should_cancel,
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]
+    assert source.loaded == ["a"]  # "b" and "c" never started
+    assert [doc_id for doc_id, _ in sink.writes] == ["a"]  # "a" not rolled back
+
+
+def test_run_with_a_store_honors_should_cancel_before_removal_cleanup(store):
+    store.set_hash("fake", "gone", "old-hash", "t0")
+    source = ScriptedSource([])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        should_cancel=lambda: True,
+    )
+
+    assert result.doc_statuses == []
+    assert sink.deletes == []
+    assert store.get_hash("fake", "gone") == "old-hash"  # cleanup never ran
+
+
+def test_run_with_should_cancel_always_false_behaves_like_no_cancellation():
+    docs = [_doc("a"), _doc("b")]
+    source = ScriptedSource(docs)
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        should_cancel=lambda: False,
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated", "updated"]
+
+
 def test_run_with_a_store_does_not_persist_a_hash_when_a_doc_fails(store):
     source = ScriptedSource([_doc("broken")])
     sink = RecordingSink()

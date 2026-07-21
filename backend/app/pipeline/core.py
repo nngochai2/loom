@@ -41,7 +41,14 @@ class Pipeline:
         config: Any,
         progress: ProgressCallback,
         store: HashStore | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> JobResult:
+        """`should_cancel` (spec §8) is polled at each doc boundary, not
+        mid-doc: a cancelled run stops picking up new docs but never
+        interrupts one already being written, so completed docs are never
+        rolled back and the doc in flight either finishes clean or (if
+        cancellation lands between docs) never starts.
+        """
         docs = source.discover(source_path)
         result = JobResult()
         total = len(docs)
@@ -50,9 +57,13 @@ class Pipeline:
             discovered_ids = {doc.doc_id for doc in docs}
             previously_seen = store.doc_ids_for_source(source.source_type)
             for doc_id in sorted(previously_seen - discovered_ids):
+                if should_cancel is not None and should_cancel():
+                    return result
                 self._remove_doc(doc_id, sinks, store, source.source_type, result)
 
         for i, doc in enumerate(docs):
+            if should_cancel is not None and should_cancel():
+                break
             try:
                 previous_hash = (
                     store.get_hash(source.source_type, doc.doc_id) if store is not None else None
