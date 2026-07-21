@@ -10,7 +10,7 @@ Everything is one pipeline. Obsidian vs. docx are source adapters; Neo4j (and la
 
 ## Status
 
-Phase 1 (pipeline core via CLI, no API, no UI) is implemented and gated:
+Phase 1 (pipeline core via CLI, no API, no UI) is done and gated. Phase 2 (job runner + FastAPI) is in progress:
 
 | Piece | Status |
 |---|---|
@@ -19,9 +19,11 @@ Phase 1 (pipeline core via CLI, no API, no UI) is implemented and gated:
 | Docx → Neo4j ingest (CLI), rule engine + rule-file schema | done |
 | Incremental re-ingestion, curated immunity, orphan flagging | done |
 | Golden-fixture parity gate (proves the port preserves NAA's real extraction behavior) | done |
-| FastAPI + job runner, Rules page, Graph correction canvas, vector sink | not started (Phase 2+) |
+| Jobs API + async runner (`POST/GET /jobs`, cancel, polling) | done |
+| Configs API (CRUD over parsing-rule YAML, JSON Schema validated) | done |
+| Preview endpoint, Rules page, Graph correction canvas, vector sink | not started |
 
-155 backend tests passing, `mypy --strict` clean.
+223 backend tests passing, `mypy --strict` clean.
 
 ## Extraction
 
@@ -42,6 +44,13 @@ Re-running ingest against the same source is cheap and safe (spec §6):
 - `origin: curated` elements — human corrections made via the (future) graph canvas — always survive re-ingestion, even when re-extraction would otherwise recreate a duplicate.
 - If re-ingestion would leave a curated edge pointing at a node that no longer exists, that edge is never auto-deleted — it's flagged `orphaned: true` and surfaced in the job result for a human to resolve.
 
+## API
+
+FastAPI app (`app/main.py`), run via `uvicorn app.main:create_app --factory`. No external queue — jobs run in-process (spec §8).
+
+- **Jobs** (`app/api/jobs.py`, `app/jobs/`) — `POST /jobs` starts an ingest run as a background `asyncio` task and returns immediately; `GET /jobs`/`GET /jobs/{id}` poll status, progress, and per-doc results (no SSE, by design); `POST /jobs/{id}/cancel` stops a run at its next doc boundary. Job history lives in the same SQLite operational store as doc-hash tracking.
+- **Configs** (`app/api/configs.py`, `app/configs/`) — CRUD over parsing-rule config YAML on disk, which stays the source of truth; the API only reads/writes it. `GET /configs` lists rule sets (id, source type, title); `GET /configs/{id}` returns the parsed YAML plus its JSON Schema so a client can render a form without a second round trip; `POST`/`PUT` validate against the docx rule-file schema (`app/pipeline/rules/schema.py`) or the Obsidian source-config schema (`app/pipeline/sources/obsidian_schema.py`, [ADR-0004](docs/adr/0004-classification-rules-in-yaml-config.md)) — an invalid config is rejected with structured schema errors and nothing is written.
+
 ## Getting started
 
 Requires Python 3.11+, [`uv`](https://github.com/astral-sh/uv), and Docker (for Neo4j).
@@ -61,9 +70,14 @@ python cli.py ingest --source obsidian --path ./path/to/vault \
 
 python cli.py ingest --source docx --path ./path/to/docs \
     --sink neo4j --config ./path/to/rules.yml --db ./loom.sqlite3
+
+# Or run the API instead of the CLI
+uvicorn app.main:create_app --factory --reload
 ```
 
 Omit `--db` for a one-shot full ingest with no hash-skip/doc-removal bookkeeping (the same shape the future `preview` endpoint needs via a `DryRunSink`).
+
+The API reads `LOOM_DB_PATH` (default `./loom.sqlite3`) and `LOOM_CONFIGS_DIR` (default `./configs`) from the environment; both are created on first use if missing.
 
 ## Development
 
@@ -83,13 +97,16 @@ pytest              # full suite; no live Neo4j required — sinks are tested ag
 loom/
 ├── backend/
 │   ├── app/
+│   │   ├── main.py                 # FastAPI app factory (create_app)
+│   │   ├── api/{jobs,configs}.py   # Jobs API / Configs API routers
 │   │   ├── pipeline/
 │   │   │   ├── core.py             # Pipeline.run — the orchestrator
 │   │   │   ├── types.py            # SourceDoc, LoadedDoc, ExtractionResult, JobResult, ...
-│   │   │   ├── sources/{base,obsidian,docx}.py
+│   │   │   ├── sources/{base,obsidian,docx,obsidian_schema}.py
 │   │   │   ├── rules/{engine,schema}.py
 │   │   │   └── sinks/{base,neo4j}.py
-│   │   ├── jobs/store.py           # SQLite: doc-hash tracking, correction log
+│   │   ├── jobs/{runner,store}.py  # async job runner + SQLite: jobs, doc-hash tracking, correction log
+│   │   ├── configs/store.py        # file-backed CRUD over parsing-rule config YAML
 │   │   └── db/neo4j_client.py      # the only module importing the bolt driver
 │   ├── cli.py                      # Phase 1 entry point: run the pipeline without API/UI
 │   ├── scripts/generate_golden_fixture_snapshot.py
