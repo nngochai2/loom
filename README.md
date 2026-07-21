@@ -21,9 +21,10 @@ Phase 1 (pipeline core via CLI, no API, no UI) is done and gated. Phase 2 (job r
 | Golden-fixture parity gate (proves the port preserves NAA's real extraction behavior) | done |
 | Jobs API + async runner (`POST/GET /jobs`, cancel, polling) | done |
 | Configs API (CRUD over parsing-rule YAML, JSON Schema validated) | done |
-| Preview endpoint, Rules page, Graph correction canvas, vector sink | not started |
+| Preview endpoint (`POST /configs/{id}/preview`, `DryRunSink`) | done |
+| Rules page, Graph correction canvas, vector sink | not started |
 
-223 backend tests passing, `mypy --strict` clean.
+232 backend tests passing, `mypy --strict` clean.
 
 ## Extraction
 
@@ -50,6 +51,7 @@ FastAPI app (`app/main.py`), run via `uvicorn app.main:create_app --factory`. No
 
 - **Jobs** (`app/api/jobs.py`, `app/jobs/`) — `POST /jobs` starts an ingest run as a background `asyncio` task and returns immediately; `GET /jobs`/`GET /jobs/{id}` poll status, progress, and per-doc results (no SSE, by design); `POST /jobs/{id}/cancel` stops a run at its next doc boundary. Job history lives in the same SQLite operational store as doc-hash tracking.
 - **Configs** (`app/api/configs.py`, `app/configs/`) — CRUD over parsing-rule config YAML on disk, which stays the source of truth; the API only reads/writes it. `GET /configs` lists rule sets (id, source type, title); `GET /configs/{id}` returns the parsed YAML plus its JSON Schema so a client can render a form without a second round trip; `POST`/`PUT` validate against the docx rule-file schema (`app/pipeline/rules/schema.py`) or the Obsidian source-config schema (`app/pipeline/sources/obsidian_schema.py`, [ADR-0004](docs/adr/0004-classification-rules-in-yaml-config.md)) — an invalid config is rejected with structured schema errors and nothing is written.
+- **Preview** (`app/api/preview.py`) — `POST /configs/{id}/preview` runs a config's source adapter through the exact same `Pipeline.run` a real job uses, but with `DryRunSink` (`app/pipeline/sinks/dryrun.py`) as the only sink, so nothing is written to Neo4j/ChromaDB. This is the spec's explicit design test for the pipeline abstraction (§4.1): preview has no extraction code path of its own. The sample is either a named fixture (`fixture_id`, resolved against the full fixture source root so cross-document structure like Obsidian wikilinks resolves the same as it would in a real job) or a one-off `multipart/form-data` upload (`sample`) dropped into its own throwaway directory — exactly one of the two per request.
 
 ## Getting started
 
@@ -75,9 +77,9 @@ python cli.py ingest --source docx --path ./path/to/docs \
 uvicorn app.main:create_app --factory --reload
 ```
 
-Omit `--db` for a one-shot full ingest with no hash-skip/doc-removal bookkeeping (the same shape the future `preview` endpoint needs via a `DryRunSink`).
+Omit `--db` for a one-shot full ingest with no hash-skip/doc-removal bookkeeping — the same shape `preview` runs through via `DryRunSink`.
 
-The API reads `LOOM_DB_PATH` (default `./loom.sqlite3`) and `LOOM_CONFIGS_DIR` (default `./configs`) from the environment; both are created on first use if missing.
+The API reads `LOOM_DB_PATH` (default `./loom.sqlite3`) and `LOOM_CONFIGS_DIR` (default `./configs`) from the environment, both created on first use if missing, plus `LOOM_FIXTURES_DIR` (default `./tests/fixtures`) pointing `preview`'s named-fixture lookup at an existing directory of sample docs.
 
 ## Development
 
@@ -98,13 +100,13 @@ loom/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI app factory (create_app)
-│   │   ├── api/{jobs,configs}.py   # Jobs API / Configs API routers
+│   │   ├── api/{jobs,configs,preview}.py   # Jobs API / Configs API / preview endpoint
 │   │   ├── pipeline/
 │   │   │   ├── core.py             # Pipeline.run — the orchestrator
 │   │   │   ├── types.py            # SourceDoc, LoadedDoc, ExtractionResult, JobResult, ...
 │   │   │   ├── sources/{base,obsidian,docx,obsidian_schema}.py
 │   │   │   ├── rules/{engine,schema}.py
-│   │   │   └── sinks/{base,neo4j}.py
+│   │   │   └── sinks/{base,neo4j,dryrun}.py
 │   │   ├── jobs/{runner,store}.py  # async job runner + SQLite: jobs, doc-hash tracking, correction log
 │   │   ├── configs/store.py        # file-backed CRUD over parsing-rule config YAML
 │   │   └── db/neo4j_client.py      # the only module importing the bolt driver

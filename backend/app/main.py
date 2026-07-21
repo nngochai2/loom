@@ -23,6 +23,7 @@ from fastapi import FastAPI
 
 from app.api.configs import create_configs_router
 from app.api.jobs import create_jobs_router
+from app.api.preview import create_preview_router
 from app.configs.store import ConfigsStore
 from app.jobs.runner import JobRunner
 from app.jobs.store import connect
@@ -31,11 +32,13 @@ from app.pipeline.sinks.base import SinkAdapter
 
 DEFAULT_DB_PATH = os.environ.get("LOOM_DB_PATH", "./loom.sqlite3")
 DEFAULT_CONFIGS_DIR = os.environ.get("LOOM_CONFIGS_DIR", "./configs")
+DEFAULT_FIXTURES_DIR = os.environ.get("LOOM_FIXTURES_DIR", "./tests/fixtures")
 
 
 def create_app(
     db_path: str = DEFAULT_DB_PATH,
     configs_dir: str = DEFAULT_CONFIGS_DIR,
+    fixtures_dir: str = DEFAULT_FIXTURES_DIR,
     sources: dict[str, tuple[type, Callable[[str], Any]]] = SOURCES,
     sinks: dict[str, Callable[[], SinkAdapter]] = SINKS,
 ) -> FastAPI:
@@ -50,4 +53,5 @@ def create_app(
     app = FastAPI(title="Loom")
     app.include_router(create_jobs_router(runner))
     app.include_router(create_configs_router(configs_store))
+    app.include_router(create_preview_router(configs_store, fixtures_dir=fixtures_dir, sources=sources))
     return app

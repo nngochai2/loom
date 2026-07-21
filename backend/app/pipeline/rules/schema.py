@@ -148,11 +148,12 @@ def _check_stable_ids_are_unique(raw: dict[str, Any]) -> None:
         seen.add(entry_id)
 
 
-def load_rule_file(path: str) -> RuleFile:
-    """Load and validate a docx rule file from YAML (spec §7)."""
-    with Path(path).open(encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
-
+def rule_file_from_dict(raw: dict[str, Any]) -> RuleFile:
+    """Build a validated `RuleFile` from an already-loaded dict -- the
+    dict-input counterpart to `load_rule_file`'s path-input, so a preview
+    run built from `ConfigsStore` data (`app/api/preview.py`, ticket #9)
+    and a job/CLI run built from a path on disk go through the exact same
+    validation and construction and can never drift apart."""
     validate_rule_file(raw)
 
     context_raw = raw.get("context", {})
@@ -186,3 +187,11 @@ def load_rule_file(path: str) -> RuleFile:
             include_non_br_tables=context_raw.get("include_non_br_tables", True),
         ),
     )
+
+
+def load_rule_file(path: str) -> RuleFile:
+    """Load and validate a docx rule file from YAML (spec §7)."""
+    with Path(path).open(encoding="utf-8") as f:
+        raw: dict[str, Any] = yaml.safe_load(f)
+
+    return rule_file_from_dict(raw)

@@ -171,11 +171,22 @@ def classify_note(
     return "NOTE", "default"
 
 
-def load_config(path: str) -> ObsidianSourceConfig:
-    """Load a per-vault classification config from YAML (ADR-0004)."""
-    with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+def default_include_subfolder(config: ObsidianSourceConfig) -> str:
+    """Which folder a new note should live under to satisfy `discover()`'s
+    inclusion filter (ADR-0004) when no vault-relative folder is already
+    known for it -- e.g. a one-off preview upload with no vault position
+    of its own (`app/api/preview.py`, ticket #9)."""
+    return config.include_folders[0] if config.include_folders else config.main_folder
 
+
+def obsidian_config_from_dict(raw: dict[str, Any]) -> ObsidianSourceConfig:
+    """Build an `ObsidianSourceConfig` from an already-loaded dict -- the
+    dict-input counterpart to `load_config`'s path-input, so a preview run
+    built from `ConfigsStore` data (`app/api/preview.py`, ticket #9) and a
+    job/CLI run built from a path on disk construct an identical config.
+    Doesn't validate, matching `load_config`'s pre-existing behavior (see
+    `sources/obsidian_schema.py`'s docstring: only the Configs API's write
+    path validates)."""
     return ObsidianSourceConfig(
         include_folders=tuple(raw["include_folders"]),
         tags_folder=raw["tags_folder"],
@@ -184,6 +195,14 @@ def load_config(path: str) -> ObsidianSourceConfig:
         type_signals={k: tuple(v) for k, v in raw["type_signals"].items()},
         rel_keywords=dict(raw["rel_keywords"]),
     )
+
+
+def load_config(path: str) -> ObsidianSourceConfig:
+    """Load a per-vault classification config from YAML (ADR-0004)."""
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    return obsidian_config_from_dict(raw)
 
 
 class ObsidianSourceAdapter:
