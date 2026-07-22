@@ -17,6 +17,26 @@ DocOutcome = Literal["skipped", "updated", "failed", "removed"]
 
 
 @dataclass(frozen=True)
+class ExtractionVersion:
+    """A source's LLM extraction "fingerprint" for one `Pipeline.run` call:
+    the prompt-template version and model name that produced (or will
+    produce) that run's prose-derived elements (ADR-0020).
+
+    Compared alongside `content_hash` when deciding whether to skip a
+    document (`Pipeline.run`): unchanged content plus an unchanged
+    fingerprint skips re-extraction as usual; either one changing forces
+    the same delete-then-rewrite path already used for a content change,
+    so curated edges and tombstones are unaffected either way. `None`
+    where a source has no such concept (e.g. Obsidian, or a docx rule file
+    with prose extraction disabled) — behavior then reduces to comparing
+    `content_hash` alone, exactly as it did before this existed.
+    """
+
+    prompt_version: str
+    model: str
+
+
+@dataclass(frozen=True)
 class SourceDoc:
     """One document as enumerated by `SourceAdapter.discover()`."""
 

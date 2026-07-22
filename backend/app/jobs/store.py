@@ -13,13 +13,15 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from app.pipeline.types import DocStatus, JobResult, OrphanFlag
+from app.pipeline.types import DocStatus, ExtractionVersion, JobResult, OrphanFlag
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS doc_hashes (
     source_type TEXT NOT NULL,
     doc_id TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    prompt_version TEXT,
+    model TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (source_type, doc_id)
 );
@@ -91,16 +93,47 @@ class HashStore:
         ).fetchone()
         return row[0] if row is not None else None
 
-    def set_hash(self, source_type: str, doc_id: str, content_hash: str, updated_at: str) -> None:
+    def set_hash(
+        self,
+        source_type: str,
+        doc_id: str,
+        content_hash: str,
+        updated_at: str,
+        *,
+        prompt_version: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """`prompt_version`/`model` are the LLM re-extraction trigger fields
+        (ADR-0020) — optional and `None` for sources/docs with no prose-
+        extraction concept (the vast majority of calls), so every existing
+        caller is unaffected."""
         with _WRITE_LOCK:
             self._conn.execute(
-                "INSERT INTO doc_hashes (source_type, doc_id, content_hash, updated_at) "
-                "VALUES (?, ?, ?, ?) "
+                "INSERT INTO doc_hashes "
+                "(source_type, doc_id, content_hash, prompt_version, model, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (source_type, doc_id) DO UPDATE SET "
-                "content_hash = excluded.content_hash, updated_at = excluded.updated_at",
-                (source_type, doc_id, content_hash, updated_at),
+                "content_hash = excluded.content_hash, "
+                "prompt_version = excluded.prompt_version, "
+                "model = excluded.model, "
+                "updated_at = excluded.updated_at",
+                (source_type, doc_id, content_hash, prompt_version, model, updated_at),
             )
             self._conn.commit()
+
+    def get_extraction_version(self, source_type: str, doc_id: str) -> ExtractionVersion | None:
+        """The fingerprint a doc's current LLM-derived extractions came from
+        (ADR-0020), or `None` if the doc is unseen or was last written by a
+        run with no prose-extraction concept. Returns the same
+        `ExtractionVersion` type `Pipeline.run` is handed, so callers
+        compare the two directly instead of re-deriving a tuple."""
+        row = self._conn.execute(
+            "SELECT prompt_version, model FROM doc_hashes WHERE source_type = ? AND doc_id = ?",
+            (source_type, doc_id),
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return ExtractionVersion(prompt_version=row[0], model=row[1])
 
     def delete_hash(self, source_type: str, doc_id: str) -> None:
         with _WRITE_LOCK:

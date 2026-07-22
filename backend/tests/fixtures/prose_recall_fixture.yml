@@ -1,0 +1,22 @@
+# Curated fixture rule file for the LLM prose-extraction recall gate
+# (ADR-0021, issue #18). Pairs with
+# tests/fixtures/prose_recall/prose_recall_fixture.docx, a short
+# hand-written prose passage with known-extractable entities/relationships
+# (see the MUST_CONTAIN_* lists in tests/test_prose_extraction_recall.py).
+# No requirements table in the fixture doc, so id_pattern never matches
+# anything — this rule file exists purely to opt the doc into prose
+# extraction. Deliberately its own fixture directory, not fixtures/docs:
+# that directory's exact *.docx count/names are asserted elsewhere.
+
+name: "Prose recall fixture"
+node_label: BUSINESS_TERM
+id_pattern: '^BR\s*(\d+)$'
+
+context:
+  include_paragraphs: true
+  include_non_br_tables: true
+  prose_extraction:
+    enabled: true
+    id: pe-recall-fixture
+    target_entity_types: [BUSINESS_TERM, TASK]
+    target_relationship_types: [DEPENDS_ON, USES]

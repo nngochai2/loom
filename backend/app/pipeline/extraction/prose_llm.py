@@ -22,6 +22,12 @@ from app.llm import ollama_client
 from app.pipeline.rules.schema import ProseExtraction
 from app.pipeline.types import Entity, Relationship
 
+# Bump whenever _PROMPT_TEMPLATE's wording changes meaningfully enough that
+# previously-stored LLM-derived extractions should be treated as stale and
+# re-extracted (ADR-0020) — compared alongside content_hash and the
+# configured model name via `ExtractionVersion` (`pipeline/types.py`).
+PROMPT_VERSION = "1"
+
 _PROMPT_TEMPLATE = """\
 You are extracting structured entities and relationships from a document's \
 prose text for a knowledge graph.

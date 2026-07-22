@@ -13,6 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import cli
+from app.llm import ollama_client
 from app.pipeline.types import DeleteReport, ExtractionResult, SinkReport
 
 
@@ -201,6 +202,76 @@ def test_run_ingest_with_db_reports_all_skipped_and_writes_nothing_on_an_unchang
     assert _ingest(second_sink) == 0
     assert second_sink.writes == []
     assert second_sink.deletes == []
+
+
+def _write_prose_extraction_config(tmp_path):
+    config_path = tmp_path / "prose_config.yml"
+    config_path.write_text(
+        """\
+name: "BR with prose extraction"
+node_label: REQUIREMENT
+id_pattern: '^BR\\s*(\\d+)$'
+id_flags: IGNORECASE
+id_format: 'BR{:02d}'
+context:
+  include_paragraphs: true
+  include_non_br_tables: true
+  prose_extraction:
+    enabled: true
+    id: pe-cli-test
+    target_entity_types: [TASK]
+""",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_run_ingest_reruns_prose_extraction_when_the_configured_model_changes(
+    tmp_path, monkeypatch
+):
+    # ADR-0020/issue #19 end-to-end through the CLI: unchanged docx content
+    # plus an unchanged model/prompt_version is skipped like any other
+    # unchanged doc; a model swap alone (content still unchanged) forces
+    # every doc using prose extraction to be reprocessed anyway.
+    monkeypatch.setattr(
+        ollama_client, "generate", lambda prompt, *, client=None: '{"entities": [], "relationships": []}'
+    )
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    config_path = _write_prose_extraction_config(tmp_path)
+    db_path = tmp_path / "loom.sqlite3"
+
+    def _ingest(sink: RecordingSink) -> int:
+        args = cli.parse_args(
+            [
+                "ingest",
+                "--source",
+                "docx",
+                "--path",
+                str(fixtures_dir / "docs"),
+                "--sink",
+                "neo4j",
+                "--config",
+                str(config_path),
+                "--db",
+                str(db_path),
+            ]
+        )
+        return cli.run_ingest(args, sinks={"neo4j": lambda: sink})
+
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3.1")
+    first_sink = RecordingSink()
+    assert _ingest(first_sink) == 0
+    assert len(first_sink.writes) == 3
+
+    same_model_sink = RecordingSink()
+    assert _ingest(same_model_sink) == 0
+    assert same_model_sink.writes == []  # unchanged content + unchanged model: skipped
+
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3.2")
+    new_model_sink = RecordingSink()
+    assert _ingest(new_model_sink) == 0
+    assert len(new_model_sink.writes) == 3  # content unchanged, but model changed
+    assert len(new_model_sink.deletes) == 3  # prior (non-curated) contributions cleared first
 
 
 def test_run_ingest_without_db_does_not_persist_a_hash_table(tmp_path):

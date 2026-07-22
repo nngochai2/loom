@@ -26,7 +26,7 @@ from typing import Any, Callable
 from app.jobs.store import HashStore
 from app.pipeline.sinks.base import SinkAdapter
 from app.pipeline.sources.base import SourceAdapter
-from app.pipeline.types import DocStatus, JobResult
+from app.pipeline.types import DocStatus, ExtractionVersion, JobResult
 
 # Reports (doc_id, progress fraction 0.0-1.0) as a job proceeds.
 ProgressCallback = Callable[[str, float], None]
@@ -42,12 +42,22 @@ class Pipeline:
         progress: ProgressCallback,
         store: HashStore | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        extraction_version: ExtractionVersion | None = None,
     ) -> JobResult:
         """`should_cancel` (spec §8) is polled at each doc boundary, not
         mid-doc: a cancelled run stops picking up new docs but never
         interrupts one already being written, so completed docs are never
         rolled back and the doc in flight either finishes clean or (if
         cancellation lands between docs) never starts.
+
+        `extraction_version` (ADR-0020) is this run's LLM prompt/model
+        fingerprint, or `None` for sources/configs with no such concept.
+        Compared alongside `content_hash` in the skip check below: an
+        unchanged document whose fingerprint has also drifted since the
+        last run is *not* skipped, so a `prompt_version` bump or a model
+        swap forces the same delete-then-rewrite path a content change
+        already gets — Pipeline.run stays oblivious to what the fingerprint
+        actually encodes, it only ever compares it for equality.
         """
         docs = source.discover(source_path)
         result = JobResult()
@@ -68,7 +78,16 @@ class Pipeline:
                 previous_hash = (
                     store.get_hash(source.source_type, doc.doc_id) if store is not None else None
                 )
-                if store is not None and previous_hash == doc.content_hash:
+                previous_version = (
+                    store.get_extraction_version(source.source_type, doc.doc_id)
+                    if store is not None
+                    else None
+                )
+                if (
+                    store is not None
+                    and previous_hash == doc.content_hash
+                    and previous_version == extraction_version
+                ):
                     result.doc_statuses.append(DocStatus(doc.doc_id, "skipped"))
                     progress(doc.doc_id, (i + 1) / total)
                     continue
@@ -93,6 +112,12 @@ class Pipeline:
                         doc.doc_id,
                         doc.content_hash,
                         datetime.now(UTC).isoformat(),
+                        prompt_version=(
+                            extraction_version.prompt_version
+                            if extraction_version is not None
+                            else None
+                        ),
+                        model=extraction_version.model if extraction_version is not None else None,
                     )
 
                 result.doc_statuses.append(DocStatus(doc.doc_id, "updated"))

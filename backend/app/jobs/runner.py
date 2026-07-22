@@ -28,9 +28,10 @@ from typing import Any, Callable
 
 from app.jobs.store import HashStore, JobStatusValue, JobStore
 from app.pipeline.core import Pipeline
-from app.pipeline.registry import SINKS, SOURCES
+from app.pipeline.registry import EXTRACTION_VERSION, SINKS, SOURCES
 from app.pipeline.sinks.base import SinkAdapter
 from app.pipeline.sources.base import SourceAdapter
+from app.pipeline.types import ExtractionVersion
 
 
 def _now() -> str:
@@ -43,10 +44,12 @@ class JobRunner:
         conn: sqlite3.Connection,
         sources: dict[str, tuple[type, Callable[[str], Any]]] = SOURCES,
         sinks: dict[str, Callable[[], SinkAdapter]] = SINKS,
+        extraction_version: dict[str, Callable[[Any], ExtractionVersion | None]] = EXTRACTION_VERSION,
     ) -> None:
         self.store = JobStore(conn)
         self.sources = sources
         self.sinks = sinks
+        self.extraction_version = extraction_version
         # One HashStore shared across every job's run: it's a stateless
         # CRUD wrapper over `conn` (see `store.py`'s write lock), so there's
         # nothing job-specific to isolate by holding a separate instance.
@@ -106,6 +109,14 @@ class JobRunner:
             config = config_loader(config_id)
             source: SourceAdapter = adapter_cls(config)
             active_sinks = [self.sinks[name]() for name in sink_types]
+            # `.get(..., lambda config: None)`, not `[source_type]`: an
+            # unregistered source_type (test fakes, most obviously) simply
+            # has no LLM fingerprint concept rather than failing the job —
+            # unlike `self.sources`/`self.sinks` above, where an unknown key
+            # legitimately should fail the job.
+            extraction_version = self.extraction_version.get(source_type, lambda config: None)(
+                config
+            )
 
             def progress(doc_id: str, fraction: float) -> None:
                 self.store.record_progress(job_id, fraction, _now())
@@ -119,6 +130,7 @@ class JobRunner:
                 progress=progress,
                 store=self._hash_store,
                 should_cancel=cancel_event.is_set,
+                extraction_version=extraction_version,
             )
             status: JobStatusValue = "cancelled" if cancel_event.is_set() else "completed"
             self.store.complete_job(job_id, status, result, _now())

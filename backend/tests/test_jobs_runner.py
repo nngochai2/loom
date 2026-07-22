@@ -9,6 +9,7 @@ import asyncio
 
 from app.jobs.runner import JobRunner
 from app.jobs.store import JobRow, connect
+from app.pipeline.types import ExtractionVersion
 from fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
 
 
@@ -143,6 +144,63 @@ async def test_runner_reuses_persistent_hash_store_across_jobs_for_incremental_r
     assert row2.result is not None
     assert [s.outcome for s in row2.result.doc_statuses] == ["skipped"]
     assert len(sink.writes) == 1  # unchanged: the second job wrote nothing new
+
+
+async def test_unregistered_source_type_gets_no_extraction_version_instead_of_failing():
+    # `extraction_version.get(source_type, ...)`, not `[source_type]`: a
+    # source_type the injected extraction_version dict doesn't know about
+    # (every test fake, by construction) must not turn into a job failure.
+    source = ScriptedSource([doc("a")])
+    sink = RecordingSink()
+    runner = _make_runner(source, sink)  # default extraction_version=EXTRACTION_VERSION
+
+    job_id = await runner.start(
+        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+    )
+    row = await _wait_for_terminal(runner, job_id)
+
+    assert row.status == "completed"
+    assert [s.outcome for s in row.result.doc_statuses] == ["updated"]
+
+
+async def test_runner_forwards_extraction_version_and_reruns_on_a_model_change():
+    source = ScriptedSource([doc("a")])
+    sink = RecordingSink()
+    conn = connect(":memory:")
+    current_model = {"value": "llama3.1"}
+    runner = JobRunner(
+        conn,
+        sources={"fake": (lambda config: source, lambda path: None)},  # type: ignore[dict-item]
+        sinks={"dryrun": lambda: sink},  # type: ignore[dict-item]
+        extraction_version={  # type: ignore[dict-item]
+            "fake": lambda config: ExtractionVersion(
+                prompt_version="1", model=current_model["value"]
+            )
+        },
+    )
+
+    job1 = await runner.start(
+        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+    )
+    await _wait_for_terminal(runner, job1)
+    assert len(sink.writes) == 1
+
+    job2 = await runner.start(
+        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+    )
+    row2 = await _wait_for_terminal(runner, job2)
+    assert row2.result is not None
+    assert [s.outcome for s in row2.result.doc_statuses] == ["skipped"]
+    assert len(sink.writes) == 1  # still just the one write from job1
+
+    current_model["value"] = "llama3.2"
+    job3 = await runner.start(
+        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+    )
+    row3 = await _wait_for_terminal(runner, job3)
+    assert row3.result is not None
+    assert [s.outcome for s in row3.result.doc_statuses] == ["updated"]
+    assert len(sink.writes) == 2  # reprocessed despite unchanged content_hash
 
 
 async def test_two_jobs_running_concurrently_do_not_corrupt_each_others_rows():

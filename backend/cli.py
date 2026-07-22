@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from app.jobs.store import HashStore, connect
 from app.pipeline.core import Pipeline
-from app.pipeline.registry import SINKS, SOURCES
+from app.pipeline.registry import EXTRACTION_VERSION, SINKS, SOURCES
 from app.pipeline.sinks.base import SinkAdapter
 from app.pipeline.sources.base import SourceAdapter
 
@@ -72,6 +72,7 @@ def run_ingest(
         config=config,
         progress=progress,
         store=store,
+        extraction_version=EXTRACTION_VERSION[args.source](config),
     )
 
     failed = [s for s in result.doc_statuses if s.outcome == "failed"]

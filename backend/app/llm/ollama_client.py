@@ -20,6 +20,13 @@ _client: httpx.Client | None = None
 _TIMEOUT_SECONDS = 120.0
 
 
+def get_model_name() -> str:
+    """Return the configured model name without making a call — the
+    re-extraction trigger (ADR-0020) needs it to build a run's
+    `ExtractionVersion` before any document is processed."""
+    return os.environ["OLLAMA_MODEL"]
+
+
 def get_client() -> httpx.Client:
     """Return the process-wide HTTP client, creating it on first use."""
     global _client

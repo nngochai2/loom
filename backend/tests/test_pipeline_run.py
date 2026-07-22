@@ -5,6 +5,7 @@ from app.pipeline.core import Pipeline
 from app.pipeline.types import (
     DeleteReport,
     ExtractionResult,
+    ExtractionVersion,
     LoadedDoc,
     OrphanFlag,
     SinkReport,
@@ -344,6 +345,160 @@ def test_run_with_a_store_collects_orphan_flags_raised_by_doc_removal(store):
     )
 
     assert result.orphans == [orphan]
+
+
+# --- extraction_version-triggered re-extraction (ADR-0020, issue #19): a
+# document with unchanged content_hash is still reprocessed if the LLM
+# prompt_version/model fingerprint has drifted since the last run, using
+# the exact same delete-then-rewrite path a content change already gets. ---
+
+
+def test_run_with_no_extraction_version_behaves_like_content_hash_alone(store):
+    # A source/config with no LLM-extraction concept (extraction_version
+    # left at its default None) is completely unaffected by this feature.
+    store.set_hash("fake", "a", "hash-a", "t0")
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["skipped"]
+
+
+def test_run_reprocesses_an_unchanged_doc_when_seen_for_the_first_time_with_a_version(store):
+    store.set_hash("fake", "a", "hash-a", "t0")  # previously written with no version tracked
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="1", model="llama3.1"),
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]
+    assert sink.deletes == ["a"]  # previous (non-versioned) contribution cleared first
+    assert [doc_id for doc_id, _ in sink.writes] == ["a"]
+    assert store.get_extraction_version("fake", "a") == ExtractionVersion(
+        prompt_version="1", model="llama3.1"
+    )
+
+
+def test_run_skips_an_unchanged_doc_when_prompt_version_and_model_also_match(store):
+    store.set_hash("fake", "a", "hash-a", "t0", prompt_version="1", model="llama3.1")
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="1", model="llama3.1"),
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["skipped"]
+    assert source.loaded == []
+    assert sink.writes == []
+    assert sink.deletes == []
+
+
+def test_run_reprocesses_an_unchanged_doc_when_prompt_version_bumped(store):
+    store.set_hash("fake", "a", "hash-a", "t0", prompt_version="1", model="llama3.1")
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="2", model="llama3.1"),
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]
+    assert sink.deletes == ["a"]
+    assert [doc_id for doc_id, _ in sink.writes] == ["a"]
+    assert store.get_extraction_version("fake", "a") == ExtractionVersion(
+        prompt_version="2", model="llama3.1"
+    )
+
+
+def test_run_reprocesses_an_unchanged_doc_when_model_changed(store):
+    store.set_hash("fake", "a", "hash-a", "t0", prompt_version="1", model="llama3.1")
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="1", model="llama3.2"),
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]
+    assert store.get_extraction_version("fake", "a") == ExtractionVersion(
+        prompt_version="1", model="llama3.2"
+    )
+
+
+def test_run_curated_edges_survive_a_version_triggered_reextraction(store):
+    # Same reuse of delete_non_curated_for_doc as a content change already
+    # gets (§6.2) -- RecordingSink's fake delete never touches curated
+    # edges by construction, same as the real sinks' Cypher does.
+    store.set_hash("fake", "a", "hash-a", "t0", prompt_version="1", model="llama3.1")
+    curated_orphan = OrphanFlag(edge_id="curated-edge-1", reason="endpoint gone")
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink(orphans_by_doc={"a": (curated_orphan,)})
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="2", model="llama3.1"),
+    )
+
+    assert result.orphans == [curated_orphan]
+    assert sink.deletes == ["a"]
+
+
+def test_run_does_not_persist_extraction_version_when_a_doc_fails(store):
+    source = ScriptedSource([_doc("broken")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="1", model="llama3.1"),
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["failed"]
+    assert store.get_extraction_version("fake", "broken") is None
 
 
 # --- Cancellation (spec §8): checked at doc boundaries only, so completed

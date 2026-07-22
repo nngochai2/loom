@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from app.jobs.store import HashStore, JobStore, connect
-from app.pipeline.types import DocStatus, JobResult, OrphanFlag
+from app.pipeline.types import DocStatus, ExtractionVersion, JobResult, OrphanFlag
 
 
 @pytest.fixture()
@@ -156,6 +156,62 @@ def test_hash_store_doc_ids_for_source_returns_only_that_sources_ids(conn: sqlit
 
     assert store.doc_ids_for_source("obsidian") == {"a.md", "b.md"}
     assert store.doc_ids_for_source("docx") == {"c.docx"}
+
+
+# --- prompt_version/model tracking (ADR-0020, issue #19): extends the same
+# doc_hashes row set_hash already writes, rather than a second table. ---
+
+
+def test_hash_store_get_extraction_version_returns_none_for_unseen_doc(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    assert store.get_extraction_version("docx", "never-seen.docx") is None
+
+
+def test_hash_store_get_extraction_version_returns_none_when_set_hash_omitted_it(
+    conn: sqlite3.Connection,
+):
+    store = HashStore(conn)
+    store.set_hash("obsidian", "note1.md", "hash-abc", "t")  # no prompt_version/model kwargs
+
+    assert store.get_extraction_version("obsidian", "note1.md") is None
+
+
+def test_hash_store_set_hash_and_get_extraction_version_round_trip(conn: sqlite3.Connection):
+    store = HashStore(conn)
+
+    store.set_hash("docx", "doc1.docx", "hash-abc", "t", prompt_version="2", model="llama3.1")
+
+    assert store.get_extraction_version("docx", "doc1.docx") == ExtractionVersion(
+        prompt_version="2", model="llama3.1"
+    )
+    assert store.get_hash("docx", "doc1.docx") == "hash-abc"  # unaffected
+
+
+def test_hash_store_set_hash_upserts_extraction_version_on_repeated_calls(
+    conn: sqlite3.Connection,
+):
+    store = HashStore(conn)
+    store.set_hash("docx", "doc1.docx", "hash-abc", "t1", prompt_version="1", model="llama3.1")
+
+    store.set_hash("docx", "doc1.docx", "hash-abc", "t2", prompt_version="2", model="llama3.2")
+
+    assert store.get_extraction_version("docx", "doc1.docx") == ExtractionVersion(
+        prompt_version="2", model="llama3.2"
+    )
+
+
+def test_hash_store_set_hash_can_clear_a_previously_recorded_extraction_version(
+    conn: sqlite3.Connection,
+):
+    # Re-ingesting via a config that no longer enables prose extraction
+    # writes prompt_version/model back to NULL for that doc.
+    store = HashStore(conn)
+    store.set_hash("docx", "doc1.docx", "hash-abc", "t1", prompt_version="1", model="llama3.1")
+
+    store.set_hash("docx", "doc1.docx", "hash-abc", "t2")
+
+    assert store.get_extraction_version("docx", "doc1.docx") is None
 
 
 # --- JobStore: the jobs table (spec §8), behind the same narrow-seam
