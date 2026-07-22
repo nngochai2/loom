@@ -15,3 +15,5 @@ Loom lifts NAA's real, deterministic, regex/rule-based extraction as-is: the wik
 - Extraction quality is verified by exact-match/golden-fixture tests (see ADR-0007), not statistical F1 scoring.
 - The `pipeline/rules/schema.py` JSON Schema must model the real rule-file shape (`id_pattern`, `category_signals`, `named_extractions`, etc. — see [[rule-file]] in CONTEXT.md), not "chunking parameters" or "prompts."
 - If genuine LLM-based extraction is wanted later, it is new scope requiring its own spec change, not an extension of "lift, don't rewrite."
+
+**Update (2026-07-21):** That scope change happened — see ADR-0018 through ADR-0022. Free-text prose content (which regex cannot meaningfully extract from) is now an explicit product goal for general, non-personal-use audiences. This ADR's decision still stands for tabular content: regex/rule-based extraction remains the required, deterministic mechanism there, and ADR-0007's exact-match testing still governs it. ADR-0018 narrows this ADR rather than replacing it — it adds an opt-in, separately-tested LLM path for prose specifically, alongside the regex path, not instead of it.

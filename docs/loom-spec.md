@@ -45,6 +45,7 @@ Two side features:
 
 4. **User-friendly parsing-rule configuration** — a form-based editor generated from a JSON Schema of the YAML config format, with **live extraction preview** against a sample document. YAML remains the source of truth on disk.
 5. **Graph correction canvas** — an NVL-based view where a user can create, retype, and delete relationships. Framed strictly as a *correction loop for extraction errors*, not a general graph editor.
+6. **Opt-in LLM-based prose extraction** — for docx documents' free-text sections (prose paragraphs, non-tabular content) that regex cannot meaningfully extract structured entities from. Runs against a local model (Ollama) only — no document content ever leaves the machine. Additive alongside regex extraction, not a replacement; see [ADR-0018](adr/0018-llm-prose-extraction-narrows-adr-0001.md)–[ADR-0022](adr/0022-partial-success-on-prose-extraction-failure.md).
 
 ### Non-goals (hard boundaries — do not implement, do not scaffold "for later")
 
@@ -64,7 +65,8 @@ Two side features:
 | Graph DB | Neo4j Community Edition (self-hosted), `neo4j` bolt driver | Driver lives in exactly one module (§4) |
 | Vector DB | ChromaDB | Sink added in Phase 5 only |
 | Operational store | SQLite | Jobs, hashes, correction log — never in Neo4j |
-| Extraction | Stdlib `re` (regex) | Deterministic, rule-driven — see [ADR-0001](adr/0001-lift-deterministic-extraction-not-llm.md) |
+| Extraction | Stdlib `re` (regex) for tabular content; opt-in local LLM (Ollama) for prose content | Regex is deterministic, rule-driven — see [ADR-0001](adr/0001-lift-deterministic-extraction-not-llm.md). Prose extraction is additive and opt-in per rule file — see [ADR-0018](adr/0018-llm-prose-extraction-narrows-adr-0001.md)–[ADR-0022](adr/0022-partial-success-on-prose-extraction-failure.md) |
+| Local LLM serving | Ollama (self-hosted, `docker-compose`) | HTTP-local only — document content never leaves the machine. See [ADR-0019](adr/0019-ollama-local-llm-serving.md) |
 | Frontend | React + Vite + TypeScript + Tailwind | |
 | Graph rendering | `@neo4j-nvl/react` (fall back to `@neo4j-nvl/base` if the wrapper is limiting) | Set `disableTelemetry: true` in nvlOptions |
 | Rule form | react-jsonschema-form (or equivalent JSON-Schema-driven form lib) | |
@@ -142,7 +144,7 @@ loom/
 │   │   │   ├── core.py
 │   │   │   ├── types.py            # SourceDoc, LoadedDoc, ExtractionResult, JobResult
 │   │   │   ├── sources/{base,obsidian,docx}.py
-│   │   │   ├── extraction/{chunking,entities}.py
+│   │   │   ├── extraction/{chunking,entities,prose_llm}.py   # prose_llm.py: Phase 6, ADR-0018 — calls Ollama, never core.py or other sources
 │   │   │   ├── rules/{engine,schema}.py
 │   │   │   └── sinks/{base,neo4j,vector,dryrun}.py
 │   │   ├── jobs/{runner,store}.py
@@ -221,14 +223,15 @@ All Cypher goes through `db/neo4j_client.py`. Sinks and API modules call it; not
 ## 7. Parsing-rule configuration
 
 - Configs are **YAML files on disk**, the source of truth. The API reads/writes them; the UI never invents a second format.
-- `pipeline/rules/schema.py` defines a **JSON Schema** for the config format, derived from NAA's real rule-file shape (`NAA/parsing-rules/br_requirements.yml`, lifted per [ADR-0001](adr/0001-lift-deterministic-extraction-not-llm.md)) — not chunking parameters or LLM prompts. See `id`/`rule_id` in [CONTEXT.md](../CONTEXT.md#rule-id).
+- `pipeline/rules/schema.py` defines a **JSON Schema** for the config format, derived from NAA's real rule-file shape (`NAA/parsing-rules/br_requirements.yml`, lifted per [ADR-0001](adr/0001-lift-deterministic-extraction-not-llm.md)) — not chunking parameters. See `id`/`rule_id` in [CONTEXT.md](../CONTEXT.md#rule-id).
 - The Rules page renders a form **generated from the JSON Schema**. Validation errors surface inline before save.
 - **Live preview** is the centerpiece: user picks a fixture or uploads a sample doc, the backend runs the real pipeline with `DryRunSink`, and the UI shows extracted entities and relationships (a simple list/table is sufficient in v1; rendering the preview in NVL is a nice-to-have, not required). Rule editing without preview is the failure mode this feature exists to eliminate — "writing YAML blind and discovering it's wrong after a 20-minute run."
 
 Config shape (resolved against NAA's real format — see [CONTEXT.md](../CONTEXT.md#rule-file)):
 - **Docx rule files:** `id_pattern`/`id_format` (item-id recognition), `title_from`, `category_signals` (regex, all matches collected), `named_extractions` (regex with `group`/`transform`/`filter`/`deduplicate`/`sort`), `context` collection flags. Each `category_signal`/`named_extraction` carries a stable `id` in addition to its editable `name` (see below).
+- **Docx `context.prose_extraction` (opt-in, default off):** `enabled`, a stable generated `id` (same pattern as above), `target_entity_types`/`target_relationship_types` (subsets of `kg-schema`'s enum). Runs a local LLM (Ollama) over the same prose text already collected by `context.include_paragraphs`/`include_non_br_tables`, alongside — not instead of — the regex path above. See [ADR-0018](adr/0018-llm-prose-extraction-narrows-adr-0001.md).
 - **Obsidian source config:** folder→entity-type mapping, fallback keyword signals, relationship-inference keywords, and which vault folders to scan — moved out of NAA's hardcoded Python into this same per-config YAML (see [ADR-0004](adr/0004-classification-rules-in-yaml-config.md)).
-- No chunking parameters, no LLM prompts — extraction is deterministic pattern matching (ADR-0001).
+- No chunking parameters. Regex rules take no LLM prompts and remain deterministic pattern matching (ADR-0001); the opt-in `prose_extraction` block above is the one exception, scoped to prose content only.
 
 **Rule IDs must be stable across edits** — they are the join key for correction analytics (§6.4). Each `category_signal`/`named_extraction` gets a separate, generated `id` field independent of its editable `name`; the Rules page form never lets renaming change the `id`. See [ADR-0005](adr/0005-stable-rule-id-separate-from-name.md).
 
@@ -311,6 +314,9 @@ Lift NAA extraction into the adapter architecture. `cli.py` runs: `python cli.py
 ### Phase 5 — Vector sink
 **Gate:** adding ChromaDB touches only `pipeline/sinks/vector.py` + registration + UI checkbox. If it requires edits to `core.py` or source adapters, stop and fix the abstraction instead. "Both" sinks in one job produces graph + vector output from a single extraction pass. The vector sink chunks each document's raw text independently of the entity-extraction rule engine and embeds those chunks (ADR-0012); chunking parameters live in sink-specific config, not the rule YAML (§7).
 
+### Phase 6 — LLM-based prose extraction (opt-in, docx only)
+**Gate:** a rule file with `context.prose_extraction.enabled: true` and a `target_entity_types`/`target_relationship_types` subset, run against a fixture docx with prose sections, produces `origin: extracted` entities/relationships tagged with the `prose_extraction` block's stable `id` as `rule_id` — merged into the same `ExtractionResult` as that document's regex-derived output, without disturbing it. Re-running with an unchanged document, model, and `prompt_version` skips prose re-extraction (§6.1 semantics); bumping either the model or `prompt_version` forces re-extraction via `delete_non_curated_for_doc` + rewrite (ADR-0020), leaving curated edges untouched (§6.2) and tombstones honored (§6.4). Ollama being unreachable mid-run degrades that document to partial success — regex output still writes, a warning surfaces, the job continues (ADR-0022) — rather than failing the document or the job. The recall-oriented fixture gate (ADR-0021) passes: all "must contain" items from the curated prose fixture appear in output.
+
 ---
 
 ## 11. Testing expectations
@@ -318,6 +324,7 @@ Lift NAA extraction into the adapter architecture. `cli.py` runs: `python cli.py
 - Unit tests for: hash-skip logic, curated-immunity, orphan detection, rule engine application, schema validation of configs.
 - Integration test per phase gate, runnable against a disposable Neo4j (docker-compose file included in repo).
 - Fixtures: a mini Obsidian vault (≥ 8 notes with wikilinks, at least one note that links to a non-existent note) and ≥ 3 docx files (one plain prose, one with tables, one that intentionally triggers zero extractions).
+- Phase 6 only: a recall-oriented (subset-assertion, not exact-match) fixture for the LLM prose-extraction path — see [ADR-0021](adr/0021-recall-oriented-test-gate-for-llm-extraction.md). Requires a local Ollama instance in CI/dev, distinct from the disposable-Neo4j requirement above.
 
 ## 12. Explicitly deferred (recorded so they are not re-litigated)
 

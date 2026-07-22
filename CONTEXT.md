@@ -36,3 +36,12 @@ A durable record of a human's deletion of an extracted or explicit edge (§6.4),
 
 ## delete_non_curated_for_doc
 The (renamed, broadened) sink method that cleans up a document's prior contribution to the graph before rewriting it — covers both `origin: extracted` and `origin: explicit`, skips tombstoned edges, never touches `origin: curated`. Runs both when a doc's content changes and when a doc disappears from the source entirely (doc removal, ADR-0008). Formerly `delete_extracted_for_doc` in the original spec draft — see ADR-0009.
+
+## Prose extraction
+The opt-in, per-rule-file extraction path that runs a local LLM (Ollama) over a docx document's free-text content — the same text already collected by `context.include_paragraphs`/`include_non_br_tables` (see [[rule-file]]) but never mined for entities before. Runs *alongside* [[rule-file]]'s regex path, not instead of it; produces `origin: extracted` items the same as regex does. Narrows ADR-0001 rather than replacing it — regex remains the deterministic, required mechanism for tabular content; prose extraction is additive and disabled by default. See ADR-0018.
+
+## Prose-extraction block
+The `context.prose_extraction` entry in a docx rule file: `enabled` (default `false`), a stable generated `id` (same pattern as a `category_signal`/`named_extraction`'s `id`, see [[rule id]]), and `target_entity_types`/`target_relationship_types` — a user-chosen subset of `kg-schema`'s enum, not the full vocabulary. Its `id` is what gets stamped as `rule_id` on every entity/relationship [[prose extraction]] produces, so §6.4 correction-rate analytics groups it the same way as regex-derived rule_ids, no special-casing. See ADR-0018.
+
+## Prompt version
+A version marker for a prose-extraction block's prompt template, tracked per document alongside `content_hash` in SQLite. Bumping it (or changing the configured Ollama model) invalidates a document's prior LLM-derived extractions and forces re-extraction through the same `delete_non_curated_for_doc` → rewrite path used for an ordinary content change — even though the document's `content_hash` itself hasn't changed. Exists because [[prose extraction]] output isn't guaranteed reproducible across model/prompt changes the way regex output is. See ADR-0020.
