@@ -37,6 +37,7 @@ class DocStatusOut(BaseModel):
     doc_id: str
     outcome: str
     error: str | None = None
+    warning: str | None = None
 
 
 class OrphanFlagOut(BaseModel):
@@ -78,7 +79,8 @@ def _to_job_out(row: JobRow) -> JobOut:
         status=row.status,
         progress=row.progress,
         doc_statuses=[
-            DocStatusOut(doc_id=s.doc_id, outcome=s.outcome, error=s.error) for s in doc_statuses
+            DocStatusOut(doc_id=s.doc_id, outcome=s.outcome, error=s.error, warning=s.warning)
+            for s in doc_statuses
         ],
         orphans=[OrphanFlagOut(edge_id=o.edge_id, reason=o.reason) for o in orphans],
         error=row.error,

@@ -5,11 +5,12 @@ into entities/relationships — table rows remain the regex engine's job
 `app.llm.ollama_client` (ADR-0019); never imports `httpx` or any other
 LLM API directly.
 
-Happy-path only (issue #17): a malformed/unparsable LLM response or an
-unreachable Ollama instance raises, which `Pipeline.run` (`pipeline/core.py`)
-already turns into a `failed` doc status. Degrading gracefully to
-partial success (regex output still written) is ADR-0022 / issue #20,
-not this module's job yet.
+An unreachable/timed-out Ollama or an unusable response (`OllamaError`
+from `ollama_client`) or an unparsable model response (`_parse_json_object`)
+is re-raised as `ProseExtractionError` — the one exception type
+`DocxSourceAdapter.extract()` catches to degrade this doc to partial
+success (regex output still written, a warning surfaced) instead of
+failing it outright (ADR-0022, issue #20).
 """
 
 from __future__ import annotations
@@ -27,6 +28,13 @@ from app.pipeline.types import Entity, Relationship
 # re-extracted (ADR-0020) — compared alongside content_hash and the
 # configured model name via `ExtractionVersion` (`pipeline/types.py`).
 PROMPT_VERSION = "1"
+
+
+class ProseExtractionError(Exception):
+    """The LLM call or its response couldn't be turned into entities/
+    relationships — Ollama unreachable/timed out (wrapping `OllamaError`)
+    or a response that isn't the expected JSON shape (ADR-0022)."""
+
 
 _PROMPT_TEMPLATE = """\
 You are extracting structured entities and relationships from a document's \
@@ -95,6 +103,11 @@ def extract_prose_entities(
     the regex engine's own output.
 
     Skips the LLM call entirely for blank content (nothing to extract).
+
+    Raises `ProseExtractionError` if Ollama is unreachable/times out or its
+    response can't be parsed as the expected JSON shape (ADR-0022) — the
+    caller decides how to degrade, this function just fails loudly rather
+    than returning a silently-empty result that looks like "nothing found".
     """
     if not content.strip():
         return (), ()
@@ -102,8 +115,11 @@ def extract_prose_entities(
     allowed_entity_types = set(prose_extraction.target_entity_types)
     allowed_relationship_types = set(prose_extraction.target_relationship_types)
 
-    raw_response = ollama_client.generate(_build_prompt(content, prose_extraction))
-    parsed = _parse_json_object(raw_response)
+    try:
+        raw_response = ollama_client.generate(_build_prompt(content, prose_extraction))
+        parsed = _parse_json_object(raw_response)
+    except (ollama_client.OllamaError, ValueError) as exc:
+        raise ProseExtractionError(str(exc)) from exc
 
     entities: list[Entity] = []
     node_id_by_name: dict[str, str] = {}

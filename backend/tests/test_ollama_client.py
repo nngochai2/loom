@@ -78,11 +78,27 @@ def test_generate_posts_prompt_to_configured_model_and_returns_response_text(oll
     assert captured["json"] == {"model": "llama3.1", "prompt": "say hi", "stream": False}
 
 
-def test_generate_raises_on_http_error_status(ollama_env):
+def test_generate_raises_ollama_error_on_http_error_status(ollama_env):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ollama_client.OllamaError):
+        ollama_client.generate("say hi", client=_fake_client(handler))
+
+
+def test_generate_raises_ollama_error_on_connection_failure(ollama_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(ollama_client.OllamaError):
+        ollama_client.generate("say hi", client=_fake_client(handler))
+
+
+def test_generate_raises_ollama_error_when_response_is_missing_the_expected_field(ollama_env):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    with pytest.raises(ollama_client.OllamaError):
         ollama_client.generate("say hi", client=_fake_client(handler))
 
 

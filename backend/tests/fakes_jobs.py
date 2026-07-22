@@ -18,8 +18,9 @@ def doc(doc_id: str) -> SourceDoc:
 class ScriptedSource:
     source_type = "fake"
 
-    def __init__(self, docs: list[SourceDoc]) -> None:
+    def __init__(self, docs: list[SourceDoc], warnings: dict[str, str] | None = None) -> None:
         self._docs = docs
+        self._warnings = warnings or {}
         self.loaded: list[str] = []
 
     def discover(self, source_path: str) -> list[SourceDoc]:
@@ -30,7 +31,11 @@ class ScriptedSource:
         return LoadedDoc(doc=doc, content="body")
 
     def extract(self, loaded: LoadedDoc, config: object) -> ExtractionResult:
-        return ExtractionResult(doc_id=loaded.doc.doc_id, content_hash=loaded.doc.content_hash)
+        return ExtractionResult(
+            doc_id=loaded.doc.doc_id,
+            content_hash=loaded.doc.content_hash,
+            warning=self._warnings.get(loaded.doc.doc_id),
+        )
 
 
 class ControllableSource(ScriptedSource):

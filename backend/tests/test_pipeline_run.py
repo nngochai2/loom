@@ -16,8 +16,9 @@ from app.pipeline.types import (
 class ScriptedSource:
     source_type = "fake"
 
-    def __init__(self, docs: list[SourceDoc]):
+    def __init__(self, docs: list[SourceDoc], warnings: dict[str, str] | None = None):
         self._docs = docs
+        self._warnings = warnings or {}
         self.loaded: list[str] = []
         self.extracted: list[str] = []
 
@@ -32,7 +33,11 @@ class ScriptedSource:
 
     def extract(self, loaded: LoadedDoc, config: object) -> ExtractionResult:
         self.extracted.append(loaded.doc.doc_id)
-        return ExtractionResult(doc_id=loaded.doc.doc_id, content_hash=loaded.doc.content_hash)
+        return ExtractionResult(
+            doc_id=loaded.doc.doc_id,
+            content_hash=loaded.doc.content_hash,
+            warning=self._warnings.get(loaded.doc.doc_id),
+        )
 
 
 class RecordingSink:
@@ -499,6 +504,135 @@ def test_run_does_not_persist_extraction_version_when_a_doc_fails(store):
 
     assert [s.outcome for s in result.doc_statuses] == ["failed"]
     assert store.get_extraction_version("fake", "broken") is None
+
+
+# --- Partial success on a degraded (but not raised) extraction (ADR-0022,
+# issue #20): `ExtractionResult.warning` -- set by the source itself, not
+# an exception -- surfaces on DocStatus without failing the doc, and
+# suppresses persisting this run's extraction_version so a later run
+# retries instead of treating the degraded run as fully up to date. ---
+
+
+def test_run_propagates_a_degraded_extractions_warning_without_failing_the_doc():
+    source = ScriptedSource([_doc("a")], warnings={"a": "prose extraction failed: timed out"})
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+    )
+
+    assert len(result.doc_statuses) == 1
+    status = result.doc_statuses[0]
+    assert status.outcome == "updated"
+    assert status.warning == "prose extraction failed: timed out"
+    assert [doc_id for doc_id, _ in sink.writes] == ["a"]  # regex/other output still written
+
+
+def test_run_leaves_warning_none_for_an_undegraded_doc():
+    source = ScriptedSource([_doc("a")])
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+    )
+
+    assert result.doc_statuses[0].warning is None
+
+
+def test_run_does_not_persist_extraction_version_for_a_degraded_doc(store):
+    source = ScriptedSource([_doc("a")], warnings={"a": "prose extraction failed: timed out"})
+    sink = RecordingSink()
+
+    Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=ExtractionVersion(prompt_version="1", model="llama3.1"),
+    )
+
+    # content_hash is still recorded normally (regex output really did write
+    # for this content)...
+    assert store.get_hash("fake", "a") == "hash-a"
+    # ...but the fingerprint is NOT, so a later run's comparison mismatches
+    # even if nothing else changes, forcing a retry (ADR-0022's requirement
+    # that a degraded doc is never treated as "successfully extracted at
+    # the current prompt_version").
+    assert store.get_extraction_version("fake", "a") is None
+
+
+def test_run_retries_a_previously_degraded_doc_even_with_unchanged_content_and_version(store):
+    source = ScriptedSource([_doc("a")], warnings={"a": "prose extraction failed: timed out"})
+    sink = RecordingSink()
+    version = ExtractionVersion(prompt_version="1", model="llama3.1")
+
+    # First run: content unchanged from nothing (brand new doc), but prose
+    # extraction degrades -- fingerprint never gets recorded.
+    Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=version,
+    )
+    assert len(sink.writes) == 1
+
+    # Second run: Ollama is back, same content, same configured version --
+    # still must NOT be skipped, since the fingerprint was never recorded.
+    healthy_source = ScriptedSource([_doc("a")])  # no warning this time
+    result = Pipeline().run(
+        source=healthy_source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+        store=store,
+        extraction_version=version,
+    )
+
+    assert [s.outcome for s in result.doc_statuses] == ["updated"]
+    assert len(sink.writes) == 2
+    assert store.get_extraction_version("fake", "a") == version
+
+
+def test_run_one_docs_degraded_extraction_does_not_affect_other_docs_in_the_same_job():
+    # AC: "Other documents in the same job are unaffected and continue
+    # processing normally" -- only "b" degrades; "a" and "c" must come back
+    # clean, in the same job, none of them marked failed.
+    source = ScriptedSource(
+        [_doc("a"), _doc("b"), _doc("c")],
+        warnings={"b": "prose extraction failed: timed out"},
+    )
+    sink = RecordingSink()
+
+    result = Pipeline().run(
+        source=source,
+        source_path="./vault",
+        sinks=[sink],
+        config=None,
+        progress=lambda doc_id, fraction: None,
+    )
+
+    statuses_by_doc = {s.doc_id: s for s in result.doc_statuses}
+    assert statuses_by_doc["a"].outcome == "updated"
+    assert statuses_by_doc["a"].warning is None
+    assert statuses_by_doc["b"].outcome == "updated"
+    assert statuses_by_doc["b"].warning == "prose extraction failed: timed out"
+    assert statuses_by_doc["c"].outcome == "updated"
+    assert statuses_by_doc["c"].warning is None
+    assert [doc_id for doc_id, _ in sink.writes] == ["a", "b", "c"]
 
 
 # --- Cancellation (spec §8): checked at doc boundaries only, so completed

@@ -8,7 +8,8 @@ import json
 
 import pytest
 
-from app.pipeline.extraction.prose_llm import extract_prose_entities
+from app.llm import ollama_client
+from app.pipeline.extraction.prose_llm import ProseExtractionError, extract_prose_entities
 from app.pipeline.rules.schema import ProseExtraction
 from tests.conftest import mock_ollama_generate
 
@@ -143,10 +144,20 @@ def test_extract_prose_entities_parses_json_wrapped_in_markdown_fences(monkeypat
     assert [e.name for e in entities] == ["A"]
 
 
-def test_extract_prose_entities_raises_on_unparsable_response(monkeypatch):
+def test_extract_prose_entities_raises_prose_extraction_error_on_unparsable_response(monkeypatch):
     _mock_generate(monkeypatch, "not json at all")
 
-    with pytest.raises(ValueError, match="no JSON object found"):
+    with pytest.raises(ProseExtractionError, match="no JSON object found"):
+        extract_prose_entities("some prose", PROSE, doc_id="doc-1", source_file="f.docx")
+
+
+def test_extract_prose_entities_raises_prose_extraction_error_on_ollama_failure(monkeypatch):
+    def fake_generate(prompt: str, *, client=None) -> str:
+        raise ollama_client.OllamaError("connection refused")
+
+    monkeypatch.setattr(ollama_client, "generate", fake_generate)
+
+    with pytest.raises(ProseExtractionError, match="connection refused"):
         extract_prose_entities("some prose", PROSE, doc_id="doc-1", source_file="f.docx")
 
 

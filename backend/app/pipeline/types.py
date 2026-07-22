@@ -97,12 +97,19 @@ class ExtractionResult:
     `content_hash` travels with the result (not as a separate `write()`
     parameter) so a sink can stamp the spec §5 mandatory properties from
     `result` alone, matching `SinkAdapter.write(doc_id, result)`'s signature.
+
+    `warning` (ADR-0022) is set when part of extraction degraded instead of
+    failing outright — currently only prose extraction hitting an
+    unreachable/timed-out Ollama or an unusable response, while `entities`/
+    `relationships` still carry whatever *did* succeed (the regex engine's
+    output). `None` means nothing degraded.
     """
 
     doc_id: str
     content_hash: str = ""
     entities: tuple[Entity, ...] = ()
     relationships: tuple[Relationship, ...] = ()
+    warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,9 +147,17 @@ class DeleteReport:
 
 @dataclass(frozen=True)
 class DocStatus:
+    """`warning` (ADR-0022) carries a non-fatal degradation for an
+    otherwise-`updated` doc (a prose-extraction failure whose regex output
+    still wrote) — distinct from `error`, which only ever accompanies
+    `outcome="failed"`. Surfaced the same way `JobResult.orphans` is meant
+    to be: expandable per-row detail in the Ingest results table, not a
+    reason to treat the whole doc as failed."""
+
     doc_id: str
     outcome: DocOutcome
     error: str | None = None
+    warning: str | None = None
 
 
 @dataclass

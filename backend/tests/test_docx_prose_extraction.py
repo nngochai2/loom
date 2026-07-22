@@ -9,6 +9,7 @@ import dataclasses
 import json
 from pathlib import Path
 
+from app.llm import ollama_client
 from app.pipeline.rules.schema import ProseExtraction, RuleContext, load_rule_file
 from app.pipeline.sources.docx import DocxSourceAdapter
 from tests.conftest import mock_ollama_generate
@@ -55,6 +56,17 @@ def test_prose_extraction_disabled_by_default_makes_no_llm_call(monkeypatch):
     assert calls == []
     assert result.entities == ()
     assert result.relationships == ()
+
+
+def test_prose_extraction_success_leaves_the_result_warning_none(monkeypatch):
+    _mock_generate(monkeypatch, json.dumps({"entities": [], "relationships": []}))
+    adapter = _adapter_with_prose_extraction(PROSE_EXTRACTION)
+
+    docs = adapter.discover(str(DOCS_DIR))
+    doc = _doc_for(docs, "plain_prose.docx")
+    result = adapter.extract(adapter.load(doc), adapter.rule_file)
+
+    assert result.warning is None
 
 
 def test_prose_extraction_enabled_produces_extracted_entities_from_prose(monkeypatch):
@@ -135,3 +147,57 @@ def test_prose_extraction_skips_llm_call_when_no_prose_content_collected(monkeyp
 
     assert calls == []
     assert result.entities == ()
+
+
+# --- Partial success on prose-extraction failure (ADR-0022, issue #20):
+# Ollama unreachable/timing out/unusable degrades this doc, it doesn't
+# fail it -- regex-derived output still comes back, with a warning. ---
+
+
+def _mock_generate_failure(monkeypatch, exc: Exception) -> None:
+    def fake_generate(prompt: str, *, client=None) -> str:
+        raise exc
+
+    monkeypatch.setattr(ollama_client, "generate", fake_generate)
+
+
+def test_prose_extraction_failure_still_returns_regex_derived_entities(monkeypatch):
+    _mock_generate_failure(monkeypatch, ollama_client.OllamaError("connection refused"))
+    adapter = _adapter_with_prose_extraction(PROSE_EXTRACTION)
+
+    docs = adapter.discover(str(DOCS_DIR))
+    doc = _doc_for(docs, "with_tables.docx")
+    result = adapter.extract(adapter.load(doc), adapter.rule_file)
+
+    # No prose items (the LLM call never succeeded), but the regex-derived
+    # requirements from the same doc's table rows are entirely unaffected.
+    assert {e.properties["req_id"] for e in result.entities} == {"BR01", "BR02"}
+    assert all(e.rule_id == "id-pattern-match" for e in result.entities)
+
+
+def test_prose_extraction_failure_surfaces_a_warning_naming_the_prose_rule(monkeypatch):
+    _mock_generate_failure(monkeypatch, ollama_client.OllamaError("connection refused"))
+    adapter = _adapter_with_prose_extraction(PROSE_EXTRACTION)
+
+    docs = adapter.discover(str(DOCS_DIR))
+    doc = _doc_for(docs, "with_tables.docx")
+    result = adapter.extract(adapter.load(doc), adapter.rule_file)
+
+    assert result.warning is not None
+    assert "pe-intro" in result.warning
+    assert "connection refused" in result.warning
+
+
+def test_prose_extraction_failure_on_a_doc_with_no_regex_matches_still_writes_nothing_but_a_warning(
+    monkeypatch,
+):
+    _mock_generate_failure(monkeypatch, ollama_client.OllamaError("timed out"))
+    adapter = _adapter_with_prose_extraction(PROSE_EXTRACTION)
+
+    docs = adapter.discover(str(DOCS_DIR))
+    doc = _doc_for(docs, "plain_prose.docx")
+    result = adapter.extract(adapter.load(doc), adapter.rule_file)
+
+    assert result.entities == ()
+    assert result.relationships == ()
+    assert result.warning is not None

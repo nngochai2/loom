@@ -25,7 +25,7 @@ from docx import Document as DocxDocument
 from docx.table import Table, _Row
 from docx.text.paragraph import Paragraph
 
-from app.pipeline.extraction.prose_llm import extract_prose_entities
+from app.pipeline.extraction.prose_llm import ProseExtractionError, extract_prose_entities
 from app.pipeline.rules.engine import RuleEngine, TableRow
 from app.pipeline.rules.schema import RuleFile, load_rule_file
 from app.pipeline.types import ExtractionResult, LoadedDoc, SourceDoc
@@ -121,20 +121,29 @@ class DocxSourceAdapter:
             source_file=source_file,
         )
 
+        warning: str | None = None
         prose_extraction = self.rule_file.context.prose_extraction
         if prose_extraction.enabled:
-            prose_entities, prose_relationships = extract_prose_entities(
-                loaded.content,
-                prose_extraction,
-                doc_id=loaded.doc.doc_id,
-                source_file=source_file,
-            )
-            entities = entities + prose_entities
-            relationships = relationships + prose_relationships
+            try:
+                prose_entities, prose_relationships = extract_prose_entities(
+                    loaded.content,
+                    prose_extraction,
+                    doc_id=loaded.doc.doc_id,
+                    source_file=source_file,
+                )
+                entities = entities + prose_entities
+                relationships = relationships + prose_relationships
+            except ProseExtractionError as exc:
+                # Partial success (ADR-0022, issue #20): the regex-derived
+                # entities/relationships above still get returned and
+                # written; this doc is neither `failed` nor missing its
+                # table-row output over one LLM hiccup.
+                warning = f"prose extraction failed (rule {prose_extraction.id!r}): {exc}"
 
         return ExtractionResult(
             doc_id=loaded.doc.doc_id,
             content_hash=loaded.doc.content_hash,
             entities=entities,
             relationships=relationships,
+            warning=warning,
         )

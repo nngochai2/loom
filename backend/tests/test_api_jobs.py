@@ -91,6 +91,36 @@ def test_post_jobs_returns_a_job_id_observable_through_completion_by_polling():
     assert len(sink.writes) == 2
 
 
+def test_get_job_surfaces_a_degraded_docs_warning_without_marking_it_failed():
+    # ADR-0022/issue #20: a doc whose extraction degraded (e.g. prose
+    # extraction hit an unreachable Ollama) stays "updated", not "failed" --
+    # its warning is exposed alongside the other per-doc fields so a future
+    # Ingest UI can render it (the same expandable-detail pattern already
+    # planned for orphan warnings).
+    source = ScriptedSource([doc("a")], warnings={"a": "prose extraction failed: timed out"})
+    sink = RecordingSink()
+
+    with _single_fake_client(source, sink) as client:
+        create_resp = client.post(
+            "/jobs",
+            json={
+                "source_type": "fake",
+                "source_path": "/vault",
+                "sinks": ["dryrun"],
+                "config_id": "cfg.yml",
+            },
+        )
+        job_id = create_resp.json()["job_id"]
+
+        body = _poll_until_terminal(client, job_id)
+
+    assert len(body["doc_statuses"]) == 1
+    status = body["doc_statuses"][0]
+    assert status["outcome"] == "updated"
+    assert status["warning"] == "prose extraction failed: timed out"
+    assert status["error"] is None
+
+
 def test_post_jobs_rejects_unknown_source_type():
     with _single_fake_client(ScriptedSource([]), RecordingSink()) as client:
         resp = client.post(

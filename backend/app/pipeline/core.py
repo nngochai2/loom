@@ -58,6 +58,16 @@ class Pipeline:
         swap forces the same delete-then-rewrite path a content change
         already gets — Pipeline.run stays oblivious to what the fingerprint
         actually encodes, it only ever compares it for equality.
+
+        A non-`None` `extraction.warning` (ADR-0022) — a degraded, partial
+        extraction rather than a hard failure — surfaces on the doc's
+        `DocStatus` as usual (`outcome` stays `"updated"`, regex/other
+        output still wrote), but is written to `store` as if this run had
+        no `extraction_version` at all: the next run's fingerprint
+        comparison then finds a mismatch regardless of whether the
+        document's content or the configured model/prompt_version changes
+        again, forcing a retry instead of silently treating the degraded
+        run as "successfully extracted at the current version" forever.
         """
         docs = source.discover(source_path)
         result = JobResult()
@@ -107,20 +117,25 @@ class Pipeline:
                     sink.write(doc.doc_id, extraction)
 
                 if store is not None:
+                    version_to_record = (
+                        extraction_version if extraction.warning is None else None
+                    )
                     store.set_hash(
                         source.source_type,
                         doc.doc_id,
                         doc.content_hash,
                         datetime.now(UTC).isoformat(),
                         prompt_version=(
-                            extraction_version.prompt_version
-                            if extraction_version is not None
+                            version_to_record.prompt_version
+                            if version_to_record is not None
                             else None
                         ),
-                        model=extraction_version.model if extraction_version is not None else None,
+                        model=version_to_record.model if version_to_record is not None else None,
                     )
 
-                result.doc_statuses.append(DocStatus(doc.doc_id, "updated"))
+                result.doc_statuses.append(
+                    DocStatus(doc.doc_id, "updated", warning=extraction.warning)
+                )
             except Exception as exc:
                 result.doc_statuses.append(DocStatus(doc.doc_id, "failed", str(exc)))
             progress(doc.doc_id, (i + 1) / total)
