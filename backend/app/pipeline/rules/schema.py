@@ -3,25 +3,32 @@
 The rule-file shape is lifted from NAA's real rule file
 (`NAA/parsing-rules/br_requirements.yml`, ADR-0001): `id_pattern`/
 `id_format`, `title_from`, `category_signals`, `named_extractions`,
-`context` collection flags. Not chunking parameters, not LLM prompts —
-extraction is deterministic pattern matching.
+`context` collection flags. Not chunking parameters. Regex rules take no
+LLM prompts and remain deterministic pattern matching (ADR-0001); the
+opt-in `context.prose_extraction` block below is the one exception,
+scoped to prose content only (ADR-0018).
 
 Each `category_signal`/`named_extraction` entry carries a stable,
 generated `id` distinct from its editable `name` (ADR-0005) — the future
 join key for `corrections.originating_rule_id` (spec §6.4). Nothing
 consumes the id yet; `RULE_FILE_SCHEMA` and `validate_rule_file` just make
 sure every rule file has one, and that it's unique, so the join key is
-correct from day one.
+correct from day one. `context.prose_extraction`'s `id` shares this same
+id-namespace (ADR-0018) — it becomes the `rule_id` stamped on every
+entity/relationship the prose-extraction path produces.
 """
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 from jsonschema import Draft202012Validator
+
+_kg_schema = importlib.import_module("kg-schema")
 
 _STABLE_ID_ENTRY_PROPERTIES: dict[str, Any] = {
     "id": {"type": "string", "minLength": 1},
@@ -51,6 +58,24 @@ NAMED_EXTRACTION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+PROSE_EXTRACTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["id"],
+    "properties": {
+        "enabled": {"type": "boolean"},
+        "id": {"type": "string", "minLength": 1},
+        "target_entity_types": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(_kg_schema.ENTITY_TYPES)},
+        },
+        "target_relationship_types": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(_kg_schema.RELATIONSHIP_TYPES)},
+        },
+    },
+    "additionalProperties": False,
+}
+
 RULE_FILE_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "Loom docx parsing rule file",
@@ -70,6 +95,7 @@ RULE_FILE_SCHEMA: dict[str, Any] = {
             "properties": {
                 "include_paragraphs": {"type": "boolean"},
                 "include_non_br_tables": {"type": "boolean"},
+                "prose_extraction": PROSE_EXTRACTION_SCHEMA,
             },
             "additionalProperties": False,
         },
@@ -107,9 +133,31 @@ class NamedExtraction:
 
 
 @dataclass(frozen=True)
+class ProseExtraction:
+    """The opt-in `context.prose_extraction` block (ADR-0018): a local-LLM
+    extraction pass over a docx document's already-collected prose text
+    (`context.include_paragraphs`/`include_non_br_tables`), run alongside
+    — not instead of — the regex path above. Disabled by default; an
+    absent block parses to this dataclass's defaults, so existing rule
+    files are unaffected.
+
+    `id` follows the same stable-id pattern as `category_signals`/
+    `named_extractions` (ADR-0005) and becomes the `rule_id` stamped on
+    every entity/relationship this path produces. `target_entity_types`/
+    `target_relationship_types` scope the LLM to a specific subset of
+    `kg-schema`'s enum rather than the full vocabulary (ADR-0018)."""
+
+    enabled: bool = False
+    id: str = ""
+    target_entity_types: tuple[str, ...] = ()
+    target_relationship_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RuleContext:
     include_paragraphs: bool = True
     include_non_br_tables: bool = True
+    prose_extraction: ProseExtraction = field(default_factory=ProseExtraction)
 
 
 @dataclass(frozen=True)
@@ -137,8 +185,13 @@ def validate_rule_file(raw: dict[str, Any]) -> None:
 
 
 def _check_stable_ids_are_unique(raw: dict[str, Any]) -> None:
+    entries = [*raw.get("category_signals", []), *raw.get("named_extractions", [])]
+    prose_extraction_raw = raw.get("context", {}).get("prose_extraction")
+    if prose_extraction_raw is not None:
+        entries.append(prose_extraction_raw)
+
     seen: set[str] = set()
-    for entry in [*raw.get("category_signals", []), *raw.get("named_extractions", [])]:
+    for entry in entries:
         entry_id = entry["id"]
         if entry_id in seen:
             raise ValueError(
@@ -157,6 +210,20 @@ def rule_file_from_dict(raw: dict[str, Any]) -> RuleFile:
     validate_rule_file(raw)
 
     context_raw = raw.get("context", {})
+    prose_extraction_raw = context_raw.get("prose_extraction")
+    prose_extraction = (
+        ProseExtraction(
+            enabled=prose_extraction_raw.get("enabled", False),
+            id=prose_extraction_raw["id"],
+            target_entity_types=tuple(prose_extraction_raw.get("target_entity_types", [])),
+            target_relationship_types=tuple(
+                prose_extraction_raw.get("target_relationship_types", [])
+            ),
+        )
+        if prose_extraction_raw is not None
+        else ProseExtraction()
+    )
+
     return RuleFile(
         name=raw["name"],
         node_label=raw["node_label"],
@@ -185,6 +252,7 @@ def rule_file_from_dict(raw: dict[str, Any]) -> RuleFile:
         context=RuleContext(
             include_paragraphs=context_raw.get("include_paragraphs", True),
             include_non_br_tables=context_raw.get("include_non_br_tables", True),
+            prose_extraction=prose_extraction,
         ),
     )
 

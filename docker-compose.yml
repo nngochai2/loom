@@ -10,5 +10,16 @@ services:
     volumes:
       - neo4j-data:/data
 
+  # Local LLM for opt-in prose extraction (Phase 6, ADR-0019). The backend
+  # only ever calls this over its localhost URL (OLLAMA_BASE_URL) — no code
+  # path sends document content to an external/hosted LLM API.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
 volumes:
   neo4j-data:
+  ollama-data:

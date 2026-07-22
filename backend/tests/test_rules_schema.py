@@ -136,3 +136,132 @@ def test_validate_rule_file_accepts_unique_ids():
     }
 
     validate_rule_file(raw)  # does not raise
+
+
+# ── context.prose_extraction (ADR-0018) ──────────────────────────────────────
+
+
+def test_load_rule_file_parses_prose_extraction_block(tmp_path):
+    path = _write(
+        tmp_path,
+        textwrap.dedent(
+            """\
+            name: "Business Requirements (fixture)"
+            node_label: REQUIREMENT
+            id_pattern: '^BR\\s*(\\d+)$'
+            context:
+              prose_extraction:
+                enabled: true
+                id: pe-intro
+                target_entity_types: [TASK, BUSINESS_TERM]
+                target_relationship_types: [RELATES_TO, DEPENDS_ON]
+            """
+        ),
+    )
+
+    rule = load_rule_file(str(path))
+
+    assert rule.context.prose_extraction.enabled is True
+    assert rule.context.prose_extraction.id == "pe-intro"
+    assert rule.context.prose_extraction.target_entity_types == ("TASK", "BUSINESS_TERM")
+    assert rule.context.prose_extraction.target_relationship_types == (
+        "RELATES_TO",
+        "DEPENDS_ON",
+    )
+
+
+def test_load_rule_file_defaults_prose_extraction_when_omitted(tmp_path):
+    path = _write(
+        tmp_path,
+        textwrap.dedent(
+            """\
+            name: "Minimal rule"
+            node_label: REQUIREMENT
+            id_pattern: '^BR\\s*(\\d+)$'
+            """
+        ),
+    )
+
+    rule = load_rule_file(str(path))
+
+    assert rule.context.prose_extraction.enabled is False
+    assert rule.context.prose_extraction.id == ""
+    assert rule.context.prose_extraction.target_entity_types == ()
+    assert rule.context.prose_extraction.target_relationship_types == ()
+
+
+def test_validate_rule_file_rejects_prose_extraction_missing_id():
+    raw = {
+        "name": "x",
+        "node_label": "REQUIREMENT",
+        "id_pattern": "^BR(\\d+)$",
+        "context": {"prose_extraction": {"enabled": True}},
+    }
+
+    with pytest.raises(ValidationError):
+        validate_rule_file(raw)
+
+
+def test_validate_rule_file_rejects_unknown_target_entity_type():
+    raw = {
+        "name": "x",
+        "node_label": "REQUIREMENT",
+        "id_pattern": "^BR(\\d+)$",
+        "context": {
+            "prose_extraction": {
+                "id": "pe-1",
+                "target_entity_types": ["NOT_A_REAL_TYPE"],
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        validate_rule_file(raw)
+
+
+def test_validate_rule_file_rejects_unknown_target_relationship_type():
+    raw = {
+        "name": "x",
+        "node_label": "REQUIREMENT",
+        "id_pattern": "^BR(\\d+)$",
+        "context": {
+            "prose_extraction": {
+                "id": "pe-1",
+                "target_relationship_types": ["NOT_A_REAL_TYPE"],
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        validate_rule_file(raw)
+
+
+def test_validate_rule_file_rejects_prose_extraction_id_colliding_with_category_signal():
+    raw = {
+        "name": "x",
+        "node_label": "REQUIREMENT",
+        "id_pattern": "^BR(\\d+)$",
+        "category_signals": [{"id": "dup", "name": "SQLView", "pattern": "VW_"}],
+        "context": {"prose_extraction": {"id": "dup"}},
+    }
+
+    with pytest.raises(ValueError, match="duplicate rule id"):
+        validate_rule_file(raw)
+
+
+def test_validate_rule_file_accepts_prose_extraction_with_unique_id():
+    raw = {
+        "name": "x",
+        "node_label": "REQUIREMENT",
+        "id_pattern": "^BR(\\d+)$",
+        "category_signals": [{"id": "cs-1", "name": "SQLView", "pattern": "VW_"}],
+        "context": {
+            "prose_extraction": {
+                "enabled": True,
+                "id": "pe-1",
+                "target_entity_types": ["TASK"],
+            }
+        },
+    }
+
+    validate_rule_file(raw)  # does not raise
