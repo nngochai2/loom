@@ -25,6 +25,7 @@ from docx import Document as DocxDocument
 from docx.table import Table, _Row
 from docx.text.paragraph import Paragraph
 
+from app.pipeline.extraction.prose_llm import extract_prose_entities
 from app.pipeline.rules.engine import RuleEngine, TableRow
 from app.pipeline.rules.schema import RuleFile, load_rule_file
 from app.pipeline.types import ExtractionResult, LoadedDoc, SourceDoc
@@ -113,11 +114,23 @@ class DocxSourceAdapter:
         rows = loaded.metadata["rows"]
         assert isinstance(rows, tuple)
 
+        source_file = Path(loaded.doc.path).name
         entities, relationships = self._engine.apply(
             list(rows),
             doc_id=loaded.doc.doc_id,
-            source_file=Path(loaded.doc.path).name,
+            source_file=source_file,
         )
+
+        prose_extraction = self.rule_file.context.prose_extraction
+        if prose_extraction.enabled:
+            prose_entities, prose_relationships = extract_prose_entities(
+                loaded.content,
+                prose_extraction,
+                doc_id=loaded.doc.doc_id,
+                source_file=source_file,
+            )
+            entities = entities + prose_entities
+            relationships = relationships + prose_relationships
 
         return ExtractionResult(
             doc_id=loaded.doc.doc_id,
