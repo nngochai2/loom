@@ -269,11 +269,14 @@ Relationship creation validates `type` against `kg-schema` and rejects unknown t
 
 ## 9. Frontend pages
 
+### Landing
+Entry point at `/`, outside the Ingest/Rules/Graph nav shell (ADR-0023) — no persistent top nav, branding-only navbar. Compact hero copy plus three shortcut cards (Obsidian→Graph, Documents→Graph, Documents→Vector) visible without scrolling, each a single click straight into the Ingest page with source and sink pre-filled. A fourth plain link ("configure manually") drops into the blank Ingest form for the source×sink combinations the three cards don't cover.
+
 ### Ingest
-Source type picker (Obsidian / docx folder) → path input → sink checkboxes (graph / vector / both) → config selector → Run. Live progress (poll `GET /jobs/{id}`; SSE is explicitly avoided — it has caused problems in our corporate proxy environment). Results table per doc: skipped / updated / failed / orphan warnings, with error detail expandable.
+Source type picker (Obsidian / docx folder) → path input → sink checkboxes (graph / vector / both) → config selector → Run. Accepts pre-filled source/sink values when arriving from a Landing card. Live progress (poll `GET /jobs/{id}`; SSE is explicitly avoided — it has caused problems in our corporate proxy environment). Results table per doc: skipped / updated / failed / orphan warnings, with error detail expandable.
 
 ### Rules
-Two panes. Left: schema-generated form for the selected config. Right: preview panel — sample selector, "Preview" button, extracted entities & relationships table with the `rule_id` that produced each. Save writes YAML.
+Two panes. Left: schema-generated form for the selected config. Right: preview panel with two tabs (ADR-0024) — Table: sample selector, "Preview" button, extracted entities & relationships table with the `rule_id` that produced each; Graph: an NVL-rendered, read-only rendering of the same preview call's output (all edges `origin: extracted`, styled per ADR-0017), click-to-inspect a node/edge via a side panel showing its properties. Both tabs populate from the same "Preview" click — no per-keystroke live update, no merge with existing Neo4j graph state. Save writes YAML.
 
 ### Graph
 Search box → pick center node → NVL canvas renders `subgraph`. Interactions, in NVL terms:
@@ -306,7 +309,7 @@ Lift NAA extraction into the adapter architecture. `cli.py` runs: `python cli.py
 **Gate:** a job started via `POST /jobs` is observable through completion via polling; cancel works mid-run; `preview` returns the identical extraction a real run would produce for the same doc+config (assert by comparison in a test); invalid config rejected with schema errors.
 
 ### Phase 3 — Rules page
-**Gate:** a user can open a config, change a rule, preview against a fixture, see the diff in extracted output, and save — without touching a YAML file by hand. The saved YAML round-trips (load → form → save) byte-stably apart from formatting.
+**Gate:** a user can open a config, change a rule, preview against a fixture, see the diff in extracted output in both the table and the graph view (ADR-0024), and save — without touching a YAML file by hand. The saved YAML round-trips (load → form → save) byte-stably apart from formatting.
 
 ### Phase 4 — Graph page
 **Gate:** search → render subgraph → create a typed relationship between two selected nodes → it persists in Neo4j with `origin: curated` → a subsequent re-ingestion of the underlying docs leaves it intact. Delete and retype work and are recorded in `corrections`; a deleted edge stays deleted across a subsequent re-ingestion of its source doc (tombstoning, ADR-0010), not silently recreated. Creating a relationship over an already-existing same-type edge promotes it to curated rather than duplicating it (ADR-0011). Edge styling reflects `origin`.
@@ -328,7 +331,7 @@ Lift NAA extraction into the adapter architecture. `cli.py` runs: `python cli.py
 
 ## 12. Explicitly deferred (recorded so they are not re-litigated)
 
-xlsx/pptx source adapters · node CRUD in canvas · correction-rate analytics UI · visual rule builder · SharePoint · auth/multi-tenancy · MCP anything · full-reingest UI · NVL-rendered preview in Rules page.
+xlsx/pptx source adapters · node CRUD in canvas · correction-rate analytics UI · visual rule builder (editing rules by manipulating a graph directly — distinct from the read-only preview graph reopened by ADR-0024) · SharePoint · auth/multi-tenancy · MCP anything · full-reingest UI.
 
 ## 13. Open items requiring human input before Phase 1
 
