@@ -66,26 +66,38 @@ def _poll_until_terminal(client: TestClient, job_id: str, timeout: float = 5.0) 
         time.sleep(0.02)
 
 
+def _make_instance(
+    client: TestClient,
+    source_type: str = "fake",
+    source_path: str = "/vault",
+    sinks: list[str] | None = None,
+) -> str:
+    """An instance (ADR-0025) via the real API, satisfying `POST /jobs`'
+    required `instance_id` — these tests are about job run mechanics, not
+    instance bookkeeping (that's `test_api_instances.py`), so each call
+    just needs a valid id to post jobs against."""
+    resp = client.post(
+        "/instances",
+        json={"source_type": source_type, "source_path": source_path, "sinks": sinks or ["dryrun"]},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["instance_id"]
+
+
 def test_post_jobs_returns_a_job_id_observable_through_completion_by_polling():
     source = ScriptedSource([doc("a"), doc("b")])
     sink = RecordingSink()
 
     with _single_fake_client(source, sink) as client:
-        create_resp = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake",
-                "source_path": "/vault",
-                "sinks": ["dryrun"],
-                "config_id": "cfg.yml",
-            },
-        )
+        instance_id = _make_instance(client)
+        create_resp = client.post("/jobs", json={"instance_id": instance_id, "config_id": "cfg.yml"})
         assert create_resp.status_code == 201
         job_id = create_resp.json()["job_id"]
 
         body = _poll_until_terminal(client, job_id)
 
     assert body["status"] == "completed"
+    assert body["instance_id"] == instance_id
     assert body["progress"] == 1.0
     assert [d["outcome"] for d in body["doc_statuses"]] == ["updated", "updated"]
     assert len(sink.writes) == 2
@@ -101,15 +113,8 @@ def test_get_job_surfaces_a_degraded_docs_warning_without_marking_it_failed():
     sink = RecordingSink()
 
     with _single_fake_client(source, sink) as client:
-        create_resp = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake",
-                "source_path": "/vault",
-                "sinks": ["dryrun"],
-                "config_id": "cfg.yml",
-            },
-        )
+        instance_id = _make_instance(client)
+        create_resp = client.post("/jobs", json={"instance_id": instance_id, "config_id": "cfg.yml"})
         job_id = create_resp.json()["job_id"]
 
         body = _poll_until_terminal(client, job_id)
@@ -121,24 +126,11 @@ def test_get_job_surfaces_a_degraded_docs_warning_without_marking_it_failed():
     assert status["error"] is None
 
 
-def test_post_jobs_rejects_unknown_source_type():
+def test_post_jobs_rejects_unknown_instance_id():
     with _single_fake_client(ScriptedSource([]), RecordingSink()) as client:
-        resp = client.post(
-            "/jobs",
-            json={"source_type": "bogus", "source_path": ".", "sinks": ["dryrun"], "config_id": "x"},
-        )
+        resp = client.post("/jobs", json={"instance_id": "does-not-exist", "config_id": "x"})
 
-    assert resp.status_code == 422
-
-
-def test_post_jobs_rejects_unknown_sink():
-    with _single_fake_client(ScriptedSource([]), RecordingSink()) as client:
-        resp = client.post(
-            "/jobs",
-            json={"source_type": "fake", "source_path": ".", "sinks": ["bogus"], "config_id": "x"},
-        )
-
-    assert resp.status_code == 422
+    assert resp.status_code == 404
 
 
 def test_get_job_returns_404_for_unknown_id():
@@ -160,14 +152,9 @@ def test_cancel_stops_a_running_job_and_reflects_cancellation_when_polled():
     sink = RecordingSink()
 
     with _single_fake_client(source, sink) as client:
+        instance_id = _make_instance(client)
         job_id = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake",
-                "source_path": "/vault",
-                "sinks": ["dryrun"],
-                "config_id": "cfg.yml",
-            },
+            "/jobs", json={"instance_id": instance_id, "config_id": "cfg.yml"}
         ).json()["job_id"]
 
         assert source.started.wait(5)  # doc "a" load() has begun
@@ -186,14 +173,9 @@ def test_cancel_on_an_already_completed_job_returns_409():
     source = ScriptedSource([doc("a")])
 
     with _single_fake_client(source, RecordingSink()) as client:
+        instance_id = _make_instance(client)
         job_id = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake",
-                "source_path": "/vault",
-                "sinks": ["dryrun"],
-                "config_id": "cfg.yml",
-            },
+            "/jobs", json={"instance_id": instance_id, "config_id": "cfg.yml"}
         ).json()["job_id"]
         _poll_until_terminal(client, job_id)
 
@@ -206,17 +188,10 @@ def test_get_jobs_paginates_history_across_multiple_runs():
     source = ScriptedSource([])
 
     with _single_fake_client(source, RecordingSink()) as client:
+        instance_id = _make_instance(client)
         job_ids = []
         for _ in range(3):
-            resp = client.post(
-                "/jobs",
-                json={
-                    "source_type": "fake",
-                    "source_path": "/vault",
-                    "sinks": ["dryrun"],
-                    "config_id": "cfg.yml",
-                },
-            )
+            resp = client.post("/jobs", json={"instance_id": instance_id, "config_id": "cfg.yml"})
             job_ids.append(resp.json()["job_id"])
             _poll_until_terminal(client, job_ids[-1])
 
@@ -230,6 +205,28 @@ def test_get_jobs_paginates_history_across_multiple_runs():
     assert seen_ids == set(job_ids)
 
 
+def test_get_jobs_filters_by_instance_id():
+    sink = RecordingSink()
+    sources = {
+        "fake-a": (lambda config: _NamedSource("fake-a", [doc("a")]), lambda path: None),
+        "fake-b": (lambda config: _NamedSource("fake-b", [doc("b")]), lambda path: None),
+    }
+
+    with _client(sources=sources, sinks={"dryrun": lambda: sink}) as client:
+        instance_a = _make_instance(client, source_type="fake-a", source_path="/vault-a")
+        instance_b = _make_instance(client, source_type="fake-b", source_path="/vault-b")
+        job_a = client.post("/jobs", json={"instance_id": instance_a, "config_id": "a.yml"}).json()["job_id"]
+        _poll_until_terminal(client, job_a)
+        job_b = client.post("/jobs", json={"instance_id": instance_b, "config_id": "b.yml"}).json()["job_id"]
+        _poll_until_terminal(client, job_b)
+
+        resp = client.get("/jobs", params={"instance_id": instance_a})
+
+    body = resp.json()
+    assert body["total"] == 1
+    assert [j["id"] for j in body["jobs"]] == [job_a]
+
+
 def test_two_jobs_run_back_to_back_do_not_corrupt_each_others_rows():
     sink = RecordingSink()
     sources = {
@@ -238,25 +235,16 @@ def test_two_jobs_run_back_to_back_do_not_corrupt_each_others_rows():
     }
 
     with _client(sources=sources, sinks={"dryrun": lambda: sink}) as client:
+        instance_a = _make_instance(client, source_type="fake-a", source_path="/vault-a")
+        instance_b = _make_instance(client, source_type="fake-b", source_path="/vault-b")
+
         job1 = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake-a",
-                "source_path": "/vault-a",
-                "sinks": ["dryrun"],
-                "config_id": "a.yml",
-            },
+            "/jobs", json={"instance_id": instance_a, "config_id": "a.yml"}
         ).json()["job_id"]
         body1 = _poll_until_terminal(client, job1)
 
         job2 = client.post(
-            "/jobs",
-            json={
-                "source_type": "fake-b",
-                "source_path": "/vault-b",
-                "sinks": ["dryrun"],
-                "config_id": "b.yml",
-            },
+            "/jobs", json={"instance_id": instance_b, "config_id": "b.yml"}
         ).json()["job_id"]
         body2 = _poll_until_terminal(client, job2)
 

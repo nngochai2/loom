@@ -45,3 +45,6 @@ The `context.prose_extraction` entry in a docx rule file: `enabled` (default `fa
 
 ## Prompt version
 A version marker for a prose-extraction block's prompt template, tracked per document alongside `content_hash` in SQLite. Bumping it (or changing the configured Ollama model) invalidates a document's prior LLM-derived extractions and forces re-extraction through the same `delete_non_curated_for_doc` → rewrite path used for an ordinary content change — even though the document's `content_hash` itself hasn't changed. Exists because [[prose extraction]] output isn't guaranteed reproducible across model/prompt changes the way regex output is. See ADR-0020.
+
+## Instance
+A named, saved recipe of **source type + source path + sink(s)** — not the rule config, which stays mutable across its history — that owns a history of job runs against it. The unit shown on the Instances page. Purely a catalog/bookkeeping concept layered over the one shared Neo4j (and future shared Chroma): deleting an instance removes its bookkeeping only, never the graph/vector data its runs wrote (no cascade delete — that data is untagged and just sits there, similar to how orphaned content already works). Not to be confused with spec §2's unrelated use of "instance" to mean the shared Neo4j/Ollama deployment itself ("a single shared instance"). See ADR-0025, ADR-0026.

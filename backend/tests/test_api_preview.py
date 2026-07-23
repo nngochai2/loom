@@ -181,12 +181,21 @@ def test_preview_matches_a_real_job_for_the_same_doc_and_config(tmp_path):
     shared_sink = RecordingSink()
 
     with _client(str(tmp_path), sinks={"recording": lambda: shared_sink}) as client:
-        job_resp = client.post(
-            "/jobs",
+        instance_resp = client.post(
+            "/instances",
             json={
                 "source_type": "docx",
                 "source_path": str(FIXTURES_DIR / "docs"),
                 "sinks": ["recording"],
+            },
+        )
+        assert instance_resp.status_code == 201, instance_resp.text
+        instance_id = instance_resp.json()["instance_id"]
+
+        job_resp = client.post(
+            "/jobs",
+            json={
+                "instance_id": instance_id,
                 "config_id": str(FIXTURES_DIR / "br_requirements.yml"),
             },
         )

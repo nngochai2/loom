@@ -26,7 +26,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from app.jobs.store import HashStore, JobStatusValue, JobStore
+from app.jobs.store import HashStore, InstanceStore, JobStatusValue, JobStore
 from app.pipeline.core import Pipeline
 from app.pipeline.registry import EXTRACTION_VERSION, SINKS, SOURCES
 from app.pipeline.sinks.base import SinkAdapter
@@ -47,6 +47,10 @@ class JobRunner:
         extraction_version: dict[str, Callable[[Any], ExtractionVersion | None]] = EXTRACTION_VERSION,
     ) -> None:
         self.store = JobStore(conn)
+        # Same conn as `self.store`, exposed here so callers (the Jobs API,
+        # tests) that already hold a `JobRunner` don't need a second wiring
+        # path to reach the instance catalog (ADR-0025).
+        self.instances = InstanceStore(conn)
         self.sources = sources
         self.sinks = sinks
         self.extraction_version = extraction_version
@@ -63,6 +67,7 @@ class JobRunner:
 
     async def start(
         self,
+        instance_id: str,
         source_type: str,
         source_path: str,
         sink_types: list[str],
@@ -70,9 +75,17 @@ class JobRunner:
     ) -> str:
         """Create the job row and fire its run in the background. Returns
         immediately with the new `job_id` — callers observe progress via
-        `JobStore`/`GET /jobs/{id}`, not by awaiting this call."""
+        `JobStore`/`GET /jobs/{id}`, not by awaiting this call.
+
+        `instance_id` (ADR-0025) is recorded on the job row but not itself
+        resolved here — the Jobs API looks it up via `InstanceStore` first
+        and passes its `source_type`/`source_path`/`sink_types` through, so
+        this method (and its tests) stay about run mechanics, not instance
+        bookkeeping."""
         job_id = uuid.uuid4().hex
-        self.store.create_job(job_id, source_type, source_path, sink_types, config_id, _now())
+        self.store.create_job(
+            job_id, instance_id, source_type, source_path, sink_types, config_id, _now()
+        )
 
         cancel_event = threading.Event()
         self._cancel_events[job_id] = cancel_event

@@ -1,16 +1,21 @@
 """The Jobs API router (spec §8): the FastAPI surface over `JobRunner`.
 
-    POST   /jobs              {source_type, source_path, sinks[], config_id} -> {job_id}
-    GET    /jobs               -> paginated job history
+    POST   /jobs              {instance_id, config_id} -> {job_id}
+    GET    /jobs               -> paginated job history; ?instance_id= filters to one instance
     GET    /jobs/{id}          -> status, progress %, per-doc results
     POST   /jobs/{id}/cancel
 
 Polling only — no SSE (spec §9: it has caused problems in the team's
 corporate proxy environment).
 
-`create_jobs_router` takes a `JobRunner` rather than reaching for global
-state, so tests can wire a fake source/sink registry through it exactly
-like `cli.run_ingest` does.
+`POST /jobs` takes `{instance_id, config_id}` (ADR-0025) rather than raw
+source/sink fields — `source_type`/`source_path`/`sinks` are resolved from
+the instance here, then forwarded to `JobRunner.start`, so `JobRunner`
+itself stays about run mechanics rather than instance bookkeeping.
+
+`create_jobs_router` takes a `JobRunner` and `InstanceStore` rather than
+reaching for global state, so tests can wire a fake source/sink registry
+through it exactly like `cli.run_ingest` does.
 """
 
 from __future__ import annotations
@@ -19,13 +24,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.jobs.runner import JobRunner
-from app.jobs.store import JobRow
+from app.jobs.store import InstanceStore, JobRow
 
 
 class CreateJobRequest(BaseModel):
-    source_type: str
-    source_path: str
-    sinks: list[str]
+    instance_id: str
     config_id: str
 
 
@@ -47,6 +50,7 @@ class OrphanFlagOut(BaseModel):
 
 class JobOut(BaseModel):
     id: str
+    instance_id: str
     source_type: str
     source_path: str
     sinks: list[str]
@@ -72,6 +76,7 @@ def _to_job_out(row: JobRow) -> JobOut:
     orphans = row.result.orphans if row.result is not None else []
     return JobOut(
         id=row.id,
+        instance_id=row.instance_id,
         source_type=row.source_type,
         source_path=row.source_path,
         sinks=row.sinks,
@@ -89,21 +94,25 @@ def _to_job_out(row: JobRow) -> JobOut:
     )
 
 
-def create_jobs_router(runner: JobRunner) -> APIRouter:
+def create_jobs_router(runner: JobRunner, instances: InstanceStore) -> APIRouter:
     router = APIRouter(prefix="/jobs", tags=["jobs"])
 
     @router.post("", response_model=CreateJobResponse, status_code=201)
     async def create_job(payload: CreateJobRequest) -> CreateJobResponse:
-        if payload.source_type not in runner.sources:
-            raise HTTPException(422, f"Unknown source_type: {payload.source_type!r}")
-        unknown_sinks = [s for s in payload.sinks if s not in runner.sinks]
+        instance = instances.get_instance(payload.instance_id)
+        if instance is None:
+            raise HTTPException(404, f"Instance not found: {payload.instance_id!r}")
+        if instance.source_type not in runner.sources:
+            raise HTTPException(422, f"Unknown source_type: {instance.source_type!r}")
+        unknown_sinks = [s for s in instance.sinks if s not in runner.sinks]
         if unknown_sinks:
             raise HTTPException(422, f"Unknown sink(s): {', '.join(unknown_sinks)}")
 
         job_id = await runner.start(
-            source_type=payload.source_type,
-            source_path=payload.source_path,
-            sink_types=payload.sinks,
+            instance_id=instance.id,
+            source_type=instance.source_type,
+            source_path=instance.source_path,
+            sink_types=instance.sinks,
             config_id=payload.config_id,
         )
         return CreateJobResponse(job_id=job_id)
@@ -112,8 +121,9 @@ def create_jobs_router(runner: JobRunner) -> APIRouter:
     async def list_jobs(
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
+        instance_id: str | None = Query(default=None),
     ) -> JobListResponse:
-        rows, total = runner.store.list_jobs(limit=limit, offset=offset)
+        rows, total = runner.store.list_jobs(limit=limit, offset=offset, instance_id=instance_id)
         return JobListResponse(
             jobs=[_to_job_out(row) for row in rows], total=total, limit=limit, offset=offset
         )

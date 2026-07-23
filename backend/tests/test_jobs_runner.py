@@ -12,6 +12,27 @@ from app.jobs.store import JobRow, connect
 from app.pipeline.types import ExtractionVersion
 from fakes_jobs import ControllableSource, RecordingSink, ScriptedSource, doc
 
+_INSTANCE_COUNTER = 0
+
+
+def _make_instance(
+    runner: JobRunner,
+    source_type: str = "fake",
+    source_path: str = "/vault",
+    sinks: list[str] | None = None,
+) -> str:
+    """A minimal instance (ADR-0025) satisfying `jobs.instance_id`'s FK —
+    these tests are about run mechanics, not instance bookkeeping, so each
+    call mints a fresh id rather than asserting anything about the instance
+    itself."""
+    global _INSTANCE_COUNTER
+    _INSTANCE_COUNTER += 1
+    instance_id = f"inst{_INSTANCE_COUNTER}"
+    runner.instances.create_instance(
+        instance_id, "Test instance", source_type, source_path, sinks or ["dryrun"], "t0"
+    )
+    return instance_id
+
 
 def _make_runner(source: object, sink: object) -> JobRunner:
     conn = connect(":memory:")
@@ -38,9 +59,14 @@ async def test_start_returns_a_job_id_immediately_and_runs_to_completion():
     source = ScriptedSource([doc("a"), doc("b")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)
+    instance_id = _make_instance(runner)
 
     job_id = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row = await _wait_for_terminal(runner, job_id)
 
@@ -55,9 +81,14 @@ async def test_progress_is_recorded_monotonically_during_the_run():
     source = ScriptedSource([doc("a"), doc("b"), doc("c")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)
+    instance_id = _make_instance(runner)
 
     job_id = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     seen: list[float] = []
     while True:
@@ -76,9 +107,14 @@ async def test_cancel_stops_the_job_before_unstarted_docs_are_processed():
     source = ControllableSource([doc("a"), doc("b"), doc("c")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)
+    instance_id = _make_instance(runner)
 
     job_id = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     await asyncio.to_thread(source.started.wait, 5)  # doc "a" load() has begun
 
@@ -104,9 +140,14 @@ async def test_cancel_after_completion_returns_false():
     source = ScriptedSource([doc("a")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)
+    instance_id = _make_instance(runner)
 
     job_id = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     await _wait_for_terminal(runner, job_id)
 
@@ -115,9 +156,14 @@ async def test_cancel_after_completion_returns_false():
 
 async def test_unknown_source_type_fails_the_job_instead_of_raising():
     runner = _make_runner(ScriptedSource([]), RecordingSink())
+    instance_id = _make_instance(runner, source_type="does-not-exist")
 
     job_id = await runner.start(
-        source_type="does-not-exist", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="does-not-exist",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row = await _wait_for_terminal(runner, job_id)
 
@@ -129,15 +175,24 @@ async def test_runner_reuses_persistent_hash_store_across_jobs_for_incremental_r
     source = ScriptedSource([doc("a")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)
+    instance_id = _make_instance(runner)
 
     job1 = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     await _wait_for_terminal(runner, job1)
     assert len(sink.writes) == 1
 
     job2 = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row2 = await _wait_for_terminal(runner, job2)
 
@@ -153,9 +208,14 @@ async def test_unregistered_source_type_gets_no_extraction_version_instead_of_fa
     source = ScriptedSource([doc("a")])
     sink = RecordingSink()
     runner = _make_runner(source, sink)  # default extraction_version=EXTRACTION_VERSION
+    instance_id = _make_instance(runner)
 
     job_id = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row = await _wait_for_terminal(runner, job_id)
 
@@ -178,15 +238,24 @@ async def test_runner_forwards_extraction_version_and_reruns_on_a_model_change()
             )
         },
     )
+    instance_id = _make_instance(runner)
 
     job1 = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     await _wait_for_terminal(runner, job1)
     assert len(sink.writes) == 1
 
     job2 = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row2 = await _wait_for_terminal(runner, job2)
     assert row2.result is not None
@@ -195,7 +264,11 @@ async def test_runner_forwards_extraction_version_and_reruns_on_a_model_change()
 
     current_model["value"] = "llama3.2"
     job3 = await runner.start(
-        source_type="fake", source_path="/vault", sink_types=["dryrun"], config_id="cfg.yml"
+        instance_id=instance_id,
+        source_type="fake",
+        source_path="/vault",
+        sink_types=["dryrun"],
+        config_id="cfg.yml",
     )
     row3 = await _wait_for_terminal(runner, job3)
     assert row3.result is not None
@@ -222,12 +295,22 @@ async def test_two_jobs_running_concurrently_do_not_corrupt_each_others_rows():
     )
     source_a.source_type = "fake-a"
     source_b.source_type = "fake-b"
+    instance_a = _make_instance(runner, source_type="fake-a", source_path="/vault-a")
+    instance_b = _make_instance(runner, source_type="fake-b", source_path="/vault-b")
 
     job_a = await runner.start(
-        source_type="fake-a", source_path="/vault-a", sink_types=["dryrun"], config_id="a.yml"
+        instance_id=instance_a,
+        source_type="fake-a",
+        source_path="/vault-a",
+        sink_types=["dryrun"],
+        config_id="a.yml",
     )
     job_b = await runner.start(
-        source_type="fake-b", source_path="/vault-b", sink_types=["dryrun"], config_id="b.yml"
+        instance_id=instance_b,
+        source_type="fake-b",
+        source_path="/vault-b",
+        sink_types=["dryrun"],
+        config_id="b.yml",
     )
 
     await asyncio.to_thread(source_a.started.wait, 5)

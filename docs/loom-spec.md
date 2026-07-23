@@ -51,7 +51,7 @@ Two side features:
 
 - ❌ Document storage, versioning, folders, or file permissions. Loom *points at* documents; it never becomes a document manager.
 - ❌ MCP server hosting, configuration, or management of any kind. If a "what do agents see" feature is ever wanted, it is a read-only query preview — and it is not in this spec.
-- ❌ Multi-tenancy, auth beyond a single shared instance, SharePoint integration.
+- ❌ Multi-tenancy, auth beyond a single shared instance, SharePoint integration. (The Instances page, [ADR-0025](adr/0025-instance-catalog-concept.md)/[ADR-0026](adr/0026-instances-nav-tab-amends-shell.md), is a catalog over this one shared instance, not an exception to this line — see [CONTEXT.md](../CONTEXT.md#instance).)
 - ❌ A visual drag-and-drop rule builder. The form editor + preview (§7) is the ceiling for config UX in v1.
 - ❌ General node CRUD in the graph canvas. v1 correction scope is **relationships only** (create/retype/delete). Node label/property editing is deferred.
 
@@ -218,6 +218,9 @@ A `delete` correction is durable across re-ingestion: it acts as a **tombstone**
 ### 6.5 One driver, one door
 All Cypher goes through `db/neo4j_client.py`. Sinks and API modules call it; nothing else imports the driver.
 
+### 6.6 Instances are a catalog, not a partition
+An **Instance** ([ADR-0025](adr/0025-instance-catalog-concept.md)) is identified by source type + source path + sink(s) only — the rule config is mutable across its history. Every job belongs to exactly one instance (`jobs.instance_id`, `NOT NULL`); there is no more anonymous run. Deleting an instance removes only its catalog bookkeeping — name, config link, job history — never the graph/vector data its runs wrote, since nodes/edges carry no `instance_id` tag. See [CONTEXT.md](../CONTEXT.md#instance).
+
 ---
 
 ## 7. Parsing-rule configuration
@@ -240,11 +243,19 @@ Config shape (resolved against NAA's real format — see [CONTEXT.md](../CONTEXT
 ## 8. API surface (complete — do not grow without spec change)
 
 ```
-POST   /jobs                      {source_type, source_path, sinks[], config_id} → {job_id}
-GET    /jobs                      → job history (paginated)
+POST   /jobs                      {instance_id, config_id} → {job_id}
+GET    /jobs                      → job history (paginated); ?instance_id= filters to one instance
 GET    /jobs/{id}                 → status, progress %, per-doc results
                                     (skipped | updated | failed | orphan-flags)
 POST   /jobs/{id}/cancel
+
+POST   /instances                 {name?, source_type, source_path, sinks[]} → {instance_id}
+                                    (name auto-generated from source_path if omitted; rejects
+                                    a duplicate (source_type, source_path, sinks), ADR-0025)
+GET    /instances                 → list, most-recently-run first
+GET    /instances/{id}            → source_type, source_path, sinks, latest job summary
+PATCH  /instances/{id}            {name} → rename
+DELETE /instances/{id}            → catalog-only (ADR-0025); underlying graph/vector data untouched
 
 GET    /configs                   → list rule sets
 GET    /configs/{id}
@@ -273,7 +284,7 @@ Relationship creation validates `type` against `kg-schema` and rejects unknown t
 Entry point at `/`, outside the Ingest/Rules/Graph nav shell (ADR-0023) — no persistent top nav, branding-only navbar. Compact hero copy plus three shortcut cards (Obsidian→Graph, Documents→Graph, Documents→Vector) visible without scrolling, each a single click straight into the Ingest page with source and sink pre-filled. A fourth plain link ("configure manually") drops into the blank Ingest form for the source×sink combinations the three cards don't cover.
 
 ### Ingest
-Source type picker (Obsidian / docx folder) → path input → sink checkboxes (graph / vector / both) → config selector → Run. Accepts pre-filled source/sink values when arriving from a Landing card. Live progress (poll `GET /jobs/{id}`; SSE is explicitly avoided — it has caused problems in our corporate proxy environment). Results table per doc: skipped / updated / failed / orphan warnings, with error detail expandable.
+Instance picker first (ADR-0026): choose an existing instance (pre-fills source type, path, sink, and config from its last run) or "New instance" + a name field (auto-named from path if left blank, ADR-0025). Then: source type picker (Obsidian / docx folder) → path input → sink checkboxes (graph / vector / both) → config selector → Run. Accepts pre-filled source/sink values when arriving from a Landing card, landing on "New instance." Live progress (poll `GET /jobs/{id}`; SSE is explicitly avoided — it has caused problems in our corporate proxy environment). Results table per doc: skipped / updated / failed / orphan warnings, with error detail expandable.
 
 ### Rules
 Two panes. Left: schema-generated form for the selected config. Right: preview panel with two tabs (ADR-0024) — Table: sample selector, "Preview" button, extracted entities & relationships table with the `rule_id` that produced each; Graph: an NVL-rendered, read-only rendering of the same preview call's output (all edges `origin: extracted`, styled per ADR-0017), click-to-inspect a node/edge via a side panel showing its properties. Both tabs populate from the same "Preview" click — no per-keystroke live update, no merge with existing Neo4j graph state. Save writes YAML.
@@ -287,6 +298,9 @@ Search box → pick center node → NVL canvas renders `subgraph`. Interactions,
 - Expand-node (fetch neighbors of a node and merge into canvas) is in scope; it is a second `subgraph` call centered on that node.
 
 No node creation, no node property editing, no bulk operations in v1.
+
+### Instances
+Fourth persistent nav tab (ADR-0026). List view (`/instances`): name, source type + path, sink(s), config in use, most recent run's status + timestamp, job count — sorted most-recently-run first. Row click → detail view (`/instances/{id}`): full job history (`GET /jobs?instance_id=`), rename, "Run again" (navigates to Ingest pre-filled from the instance's last run), delete (catalog-only, ADR-0025).
 
 ---
 
@@ -331,7 +345,7 @@ Lift NAA extraction into the adapter architecture. `cli.py` runs: `python cli.py
 
 ## 12. Explicitly deferred (recorded so they are not re-litigated)
 
-xlsx/pptx source adapters · node CRUD in canvas · correction-rate analytics UI · visual rule builder (editing rules by manipulating a graph directly — distinct from the read-only preview graph reopened by ADR-0024) · SharePoint · auth/multi-tenancy · MCP anything · full-reingest UI.
+xlsx/pptx source adapters · node CRUD in canvas · correction-rate analytics UI · visual rule builder (editing rules by manipulating a graph directly — distinct from the read-only preview graph reopened by ADR-0024) · SharePoint · auth/multi-tenancy · MCP anything · full-reingest UI · per-instance graph partitioning (tagging nodes/edges with `instance_id` — the Instances page, ADR-0025, is catalog-only and doesn't need this).
 
 ## 13. Open items requiring human input before Phase 1
 

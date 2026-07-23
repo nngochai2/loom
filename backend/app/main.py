@@ -22,6 +22,7 @@ from typing import Any, Callable
 from fastapi import FastAPI
 
 from app.api.configs import create_configs_router
+from app.api.instances import create_instances_router
 from app.api.jobs import create_jobs_router
 from app.api.preview import create_preview_router
 from app.configs.store import ConfigsStore
@@ -51,7 +52,8 @@ def create_app(
     configs_store = ConfigsStore(configs_dir)
 
     app = FastAPI(title="Loom")
-    app.include_router(create_jobs_router(runner))
+    app.include_router(create_jobs_router(runner, runner.instances))
+    app.include_router(create_instances_router(runner.instances, sources, sinks))
     app.include_router(create_configs_router(configs_store))
     app.include_router(create_preview_router(configs_store, fixtures_dir=fixtures_dir, sources=sources))
     return app

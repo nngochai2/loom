@@ -1,8 +1,10 @@
-"""Loom's operational store (spec §3, §4.2): jobs, per-doc content hashes,
-and the correction log. Never Neo4j — see `db/neo4j_client.py` for that door.
+"""Loom's operational store (spec §3, §4.2): instances, jobs, per-doc content
+hashes, and the correction log. Never Neo4j — see `db/neo4j_client.py` for
+that door.
 
 This module owns table creation for the pieces specified in spec §6.1, §6.4
-(hash tracking, corrections) and §8 (job history, behind `JobStore`).
+(hash tracking, corrections), §6.6/ADR-0025 (instance catalog, behind
+`InstanceStore`) and §8 (job history, behind `JobStore`).
 """
 
 from __future__ import annotations
@@ -36,8 +38,20 @@ CREATE TABLE IF NOT EXISTS corrections (
     originating_rule_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS instances (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    sinks TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (source_type, source_path, sinks)
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
+    instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
     source_type TEXT NOT NULL,
     source_path TEXT NOT NULL,
     sinks TEXT NOT NULL,
@@ -151,6 +165,152 @@ class HashStore:
         return {row[0] for row in rows}
 
 
+class DuplicateInstanceError(Exception):
+    """Raised by `InstanceStore.create_instance` when an instance with the
+    identical (source_type, source_path, sinks) tuple already exists
+    (ADR-0025) — the API layer turns this into a 409."""
+
+
+@dataclass(frozen=True)
+class InstanceRow:
+    """One `instances` row (ADR-0025), plus the job-history summary fields
+    `list_instances`/`get_instance` compute alongside it so the Instances
+    page (spec §9) doesn't need a second round trip per row."""
+
+    id: str
+    name: str
+    source_type: str
+    source_path: str
+    sinks: list[str]
+    created_at: str
+    updated_at: str
+    job_count: int
+    last_status: JobStatusValue | None
+    last_run_at: str | None
+
+
+class InstanceStore:
+    """The `instances` table (ADR-0025) — a catalog of source+sink recipes,
+    never a partition of the graph itself (see spec §6.6). Deleting an
+    instance removes only this bookkeeping and its `jobs` rows; it never
+    touches Neo4j/Chroma."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def create_instance(
+        self,
+        instance_id: str,
+        name: str,
+        source_type: str,
+        source_path: str,
+        sinks: list[str],
+        created_at: str,
+    ) -> None:
+        sinks_json = json.dumps(sorted(sinks))
+        with _WRITE_LOCK:
+            try:
+                self._conn.execute(
+                    "INSERT INTO instances "
+                    "(id, name, source_type, source_path, sinks, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (instance_id, name, source_type, source_path, sinks_json, created_at, created_at),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                if "UNIQUE" in str(exc):
+                    raise DuplicateInstanceError(
+                        f"An instance for {source_type!r} at {source_path!r} with "
+                        f"sinks {sorted(sinks)!r} already exists"
+                    ) from exc
+                raise
+
+    def get_instance(self, instance_id: str) -> InstanceRow | None:
+        row = self._conn.execute(
+            "SELECT i.id, i.name, i.source_type, i.source_path, i.sinks, "
+            "i.created_at, i.updated_at, "
+            "(SELECT COUNT(*) FROM jobs j WHERE j.instance_id = i.id), "
+            "(SELECT j.status FROM jobs j WHERE j.instance_id = i.id "
+            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1), "
+            "(SELECT j.created_at FROM jobs j WHERE j.instance_id = i.id "
+            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) "
+            "FROM instances i WHERE i.id = ?",
+            (instance_id,),
+        ).fetchone()
+        return self._row_to_instance(row) if row is not None else None
+
+    def list_instances(self) -> list[InstanceRow]:
+        """Most-recently-run first (spec §9); instances with no runs yet
+        sort by `created_at` instead, since they have no run to sort by."""
+        rows = self._conn.execute(
+            "SELECT i.id, i.name, i.source_type, i.source_path, i.sinks, "
+            "i.created_at, i.updated_at, "
+            "(SELECT COUNT(*) FROM jobs j WHERE j.instance_id = i.id) AS job_count, "
+            "(SELECT j.status FROM jobs j WHERE j.instance_id = i.id "
+            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_status, "
+            "(SELECT j.created_at FROM jobs j WHERE j.instance_id = i.id "
+            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_run_at "
+            "FROM instances i "
+            "ORDER BY COALESCE(last_run_at, i.created_at) DESC, i.id DESC"
+        ).fetchall()
+        return [self._row_to_instance(row) for row in rows]
+
+    def rename_instance(self, instance_id: str, name: str, updated_at: str) -> None:
+        with _WRITE_LOCK:
+            self._conn.execute(
+                "UPDATE instances SET name = ?, updated_at = ? WHERE id = ?",
+                (name, updated_at, instance_id),
+            )
+            self._conn.commit()
+
+    def delete_instance(self, instance_id: str) -> None:
+        """Catalog-only (ADR-0025): removes this instance's bookkeeping and
+        its `jobs` history rows. Never issues a Neo4j/Chroma write or
+        delete — the graph/vector data those jobs wrote is left exactly
+        as-is, untagged and unattributed, same as any orphaned content."""
+        with _WRITE_LOCK:
+            self._conn.execute("DELETE FROM jobs WHERE instance_id = ?", (instance_id,))
+            self._conn.execute("DELETE FROM instances WHERE id = ?", (instance_id,))
+            self._conn.commit()
+
+    @staticmethod
+    def _row_to_instance(row: tuple[object, ...]) -> InstanceRow:
+        (
+            instance_id,
+            name,
+            source_type,
+            source_path,
+            sinks_json,
+            created_at,
+            updated_at,
+            job_count,
+            last_status,
+            last_run_at,
+        ) = row
+        assert isinstance(instance_id, str)
+        assert isinstance(name, str)
+        assert isinstance(source_type, str)
+        assert isinstance(source_path, str)
+        assert isinstance(sinks_json, str)
+        assert isinstance(created_at, str)
+        assert isinstance(updated_at, str)
+        assert isinstance(job_count, int)
+        assert last_status is None or isinstance(last_status, str)
+        assert last_run_at is None or isinstance(last_run_at, str)
+        return InstanceRow(
+            id=instance_id,
+            name=name,
+            source_type=source_type,
+            source_path=source_path,
+            sinks=json.loads(sinks_json),
+            created_at=created_at,
+            updated_at=updated_at,
+            job_count=job_count,
+            last_status=last_status,  # type: ignore[arg-type]
+            last_run_at=last_run_at,
+        )
+
+
 JobStatusValue = Literal["pending", "running", "completed", "failed", "cancelled"]
 
 
@@ -161,6 +321,7 @@ class JobRow:
     or reached a terminal status (see `complete_job`)."""
 
     id: str
+    instance_id: str
     source_type: str
     source_path: str
     sinks: list[str]
@@ -203,19 +364,35 @@ class JobStore:
     def create_job(
         self,
         job_id: str,
+        instance_id: str,
         source_type: str,
         source_path: str,
         sinks: list[str],
         config_id: str,
         created_at: str,
     ) -> None:
+        """`instance_id` (ADR-0025) is the instance this job belongs to —
+        `source_type`/`source_path`/`sinks` are still passed explicitly
+        (rather than looked up from the instance here) so `JobRunner`/tests
+        that only care about run mechanics don't need an `InstanceStore`
+        round trip; the Jobs API resolves them from the instance before
+        calling this."""
         with _WRITE_LOCK:
             self._conn.execute(
                 "INSERT INTO jobs "
-                "(id, source_type, source_path, sinks, config_id, status, progress, "
+                "(id, instance_id, source_type, source_path, sinks, config_id, status, progress, "
                 "result, error, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', 0.0, NULL, NULL, ?, ?)",
-                (job_id, source_type, source_path, json.dumps(sinks), config_id, created_at, created_at),
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0.0, NULL, NULL, ?, ?)",
+                (
+                    job_id,
+                    instance_id,
+                    source_type,
+                    source_path,
+                    json.dumps(sinks),
+                    config_id,
+                    created_at,
+                    created_at,
+                ),
             )
             self._conn.commit()
 
@@ -264,21 +441,27 @@ class JobStore:
 
     def get_job(self, job_id: str) -> JobRow | None:
         row = self._conn.execute(
-            "SELECT id, source_type, source_path, sinks, config_id, status, progress, "
-            "result, error, created_at, updated_at FROM jobs WHERE id = ?",
+            "SELECT id, instance_id, source_type, source_path, sinks, config_id, status, "
+            "progress, result, error, created_at, updated_at FROM jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
         return self._row_to_job(row) if row is not None else None
 
-    def list_jobs(self, limit: int = 20, offset: int = 0) -> tuple[list[JobRow], int]:
+    def list_jobs(
+        self, limit: int = 20, offset: int = 0, instance_id: str | None = None
+    ) -> tuple[list[JobRow], int]:
         """Most-recent-first job history (spec §8), with a total count so
-        callers can build pagination metadata without a second round trip."""
-        total = self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        callers can build pagination metadata without a second round trip.
+        `instance_id` (ADR-0026) scopes history to one instance, for the
+        Instances detail page."""
+        where = " WHERE instance_id = ?" if instance_id is not None else ""
+        params = (instance_id,) if instance_id is not None else ()
+        total = self._conn.execute(f"SELECT COUNT(*) FROM jobs{where}", params).fetchone()[0]
         rows = self._conn.execute(
-            "SELECT id, source_type, source_path, sinks, config_id, status, progress, "
-            "result, error, created_at, updated_at FROM jobs "
+            "SELECT id, instance_id, source_type, source_path, sinks, config_id, status, "
+            f"progress, result, error, created_at, updated_at FROM jobs{where} "
             "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            (*params, limit, offset),
         ).fetchall()
         return [self._row_to_job(row) for row in rows], total
 
@@ -286,6 +469,7 @@ class JobStore:
     def _row_to_job(row: tuple[object, ...]) -> JobRow:
         (
             job_id,
+            instance_id,
             source_type,
             source_path,
             sinks_json,
@@ -298,6 +482,7 @@ class JobStore:
             updated_at,
         ) = row
         assert isinstance(job_id, str)
+        assert isinstance(instance_id, str)
         assert isinstance(source_type, str)
         assert isinstance(source_path, str)
         assert isinstance(sinks_json, str)
@@ -310,6 +495,7 @@ class JobStore:
         assert isinstance(updated_at, str)
         return JobRow(
             id=job_id,
+            instance_id=instance_id,
             source_type=source_type,
             source_path=source_path,
             sinks=json.loads(sinks_json),
