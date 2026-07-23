@@ -13,9 +13,10 @@ source/sink fields — `source_type`/`source_path`/`sinks` are resolved from
 the instance here, then forwarded to `JobRunner.start`, so `JobRunner`
 itself stays about run mechanics rather than instance bookkeeping.
 
-`create_jobs_router` takes a `JobRunner` and `InstanceStore` rather than
-reaching for global state, so tests can wire a fake source/sink registry
-through it exactly like `cli.run_ingest` does.
+`create_jobs_router` takes a `JobRunner` rather than reaching for global
+state, so tests can wire a fake source/sink registry through it exactly
+like `cli.run_ingest` does — `runner.instances` (ADR-0025) is the same
+seam, so this router needs nothing beyond the one `JobRunner`.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from app.api._registry_validation import validate_source_and_sinks
 from app.jobs.runner import JobRunner
-from app.jobs.store import InstanceStore, JobRow
+from app.jobs.store import JobRow
 
 
 class CreateJobRequest(BaseModel):
@@ -94,19 +96,15 @@ def _to_job_out(row: JobRow) -> JobOut:
     )
 
 
-def create_jobs_router(runner: JobRunner, instances: InstanceStore) -> APIRouter:
+def create_jobs_router(runner: JobRunner) -> APIRouter:
     router = APIRouter(prefix="/jobs", tags=["jobs"])
 
     @router.post("", response_model=CreateJobResponse, status_code=201)
     async def create_job(payload: CreateJobRequest) -> CreateJobResponse:
-        instance = instances.get_instance(payload.instance_id)
+        instance = runner.instances.get_instance(payload.instance_id)
         if instance is None:
             raise HTTPException(404, f"Instance not found: {payload.instance_id!r}")
-        if instance.source_type not in runner.sources:
-            raise HTTPException(422, f"Unknown source_type: {instance.source_type!r}")
-        unknown_sinks = [s for s in instance.sinks if s not in runner.sinks]
-        if unknown_sinks:
-            raise HTTPException(422, f"Unknown sink(s): {', '.join(unknown_sinks)}")
+        validate_source_and_sinks(runner.sources, runner.sinks, instance.source_type, instance.sinks)
 
         job_id = await runner.start(
             instance_id=instance.id,

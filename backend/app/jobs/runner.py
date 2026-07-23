@@ -23,19 +23,14 @@ import asyncio
 import sqlite3
 import threading
 import uuid
-from datetime import UTC, datetime
 from typing import Any, Callable
 
-from app.jobs.store import HashStore, InstanceStore, JobStatusValue, JobStore
+from app.jobs.store import HashStore, InstanceStore, JobStatusValue, JobStore, now_iso
 from app.pipeline.core import Pipeline
 from app.pipeline.registry import EXTRACTION_VERSION, SINKS, SOURCES
 from app.pipeline.sinks.base import SinkAdapter
 from app.pipeline.sources.base import SourceAdapter
 from app.pipeline.types import ExtractionVersion
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 class JobRunner:
@@ -84,7 +79,7 @@ class JobRunner:
         bookkeeping."""
         job_id = uuid.uuid4().hex
         self.store.create_job(
-            job_id, instance_id, source_type, source_path, sink_types, config_id, _now()
+            job_id, instance_id, source_type, source_path, sink_types, config_id, now_iso()
         )
 
         cancel_event = threading.Event()
@@ -116,7 +111,7 @@ class JobRunner:
         config_id: str,
         cancel_event: threading.Event,
     ) -> None:
-        self.store.mark_running(job_id, _now())
+        self.store.mark_running(job_id, now_iso())
         try:
             adapter_cls, config_loader = self.sources[source_type]
             config = config_loader(config_id)
@@ -132,7 +127,7 @@ class JobRunner:
             )
 
             def progress(doc_id: str, fraction: float) -> None:
-                self.store.record_progress(job_id, fraction, _now())
+                self.store.record_progress(job_id, fraction, now_iso())
 
             result = await asyncio.to_thread(
                 Pipeline().run,
@@ -146,12 +141,12 @@ class JobRunner:
                 extraction_version=extraction_version,
             )
             status: JobStatusValue = "cancelled" if cancel_event.is_set() else "completed"
-            self.store.complete_job(job_id, status, result, _now())
+            self.store.complete_job(job_id, status, result, now_iso())
         except Exception as exc:
             # Anything raised outside Pipeline.run's own per-doc try/except
             # (unknown source_type/sink, an unreadable config file, ...) —
             # surfaced as the job's terminal error rather than crashing the
             # background task silently.
-            self.store.fail_job(job_id, str(exc), _now())
+            self.store.fail_job(job_id, str(exc), now_iso())
         finally:
             self._cancel_events.pop(job_id, None)

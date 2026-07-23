@@ -7,29 +7,25 @@ source+sink recipes, never a partition of the graph itself.
     PATCH  /instances/{id}     {name} -> rename
     DELETE /instances/{id}     -> catalog-only; underlying graph/vector data untouched
 
-`create_instances_router` takes the same injectable source/sink registries
-`create_jobs_router` does, so an instance's source_type/sinks are validated
-against the real registries at creation time rather than only when a job
-is later run against it.
+`create_instances_router` takes a `JobRunner`, the same seam
+`create_jobs_router` uses — `runner.sources`/`runner.sinks` validate an
+instance's source_type/sinks at creation time (rather than only when a job
+is later run against it), and `runner.instances` (ADR-0025) is the store.
 """
 
 from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.jobs.store import DuplicateInstanceError, InstanceRow, InstanceStore
+from app.api._registry_validation import validate_source_and_sinks
+from app.jobs.runner import JobRunner
+from app.jobs.store import DuplicateInstanceError, InstanceRow, now_iso
 
 _SOURCE_LABELS = {"obsidian": "Obsidian vault", "docx": "Documents folder"}
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _auto_name(source_type: str, source_path: str) -> str:
@@ -86,25 +82,23 @@ def _to_instance_out(row: InstanceRow) -> InstanceOut:
 
 
 def create_instances_router(
-    instances: InstanceStore,
-    sources: dict[str, Any],
-    sinks: dict[str, Any],
+    runner: JobRunner,
 ) -> APIRouter:
+    instances = runner.instances
     router = APIRouter(prefix="/instances", tags=["instances"])
 
     @router.post("", response_model=CreateInstanceResponse, status_code=201)
     async def create_instance(payload: CreateInstanceRequest) -> CreateInstanceResponse:
-        if payload.source_type not in sources:
-            raise HTTPException(422, f"Unknown source_type: {payload.source_type!r}")
-        unknown_sinks = [s for s in payload.sinks if s not in sinks]
-        if unknown_sinks:
-            raise HTTPException(422, f"Unknown sink(s): {', '.join(unknown_sinks)}")
+        validate_source_and_sinks(runner.sources, runner.sinks, payload.source_type, payload.sinks)
 
-        name = payload.name or _auto_name(payload.source_type, payload.source_path)
+        # A blank/whitespace-only name is treated the same as an omitted
+        # one — nothing downstream (the Instances page, a rename prompt)
+        # wants to display an instance with an empty label.
+        name = (payload.name or "").strip() or _auto_name(payload.source_type, payload.source_path)
         instance_id = uuid.uuid4().hex
         try:
             instances.create_instance(
-                instance_id, name, payload.source_type, payload.source_path, payload.sinks, _now()
+                instance_id, name, payload.source_type, payload.source_path, payload.sinks, now_iso()
             )
         except DuplicateInstanceError as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -125,7 +119,7 @@ def create_instances_router(
     async def rename_instance(instance_id: str, payload: RenameInstanceRequest) -> InstanceOut:
         if instances.get_instance(instance_id) is None:
             raise HTTPException(404, "Instance not found")
-        instances.rename_instance(instance_id, payload.name, _now())
+        instances.rename_instance(instance_id, payload.name, now_iso())
         row = instances.get_instance(instance_id)
         assert row is not None  # can't vanish between the rename and this read
         return _to_instance_out(row)

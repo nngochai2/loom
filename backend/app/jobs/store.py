@@ -13,9 +13,18 @@ import json
 import sqlite3
 import threading
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 from app.pipeline.types import DocStatus, ExtractionVersion, JobResult, OrphanFlag
+
+
+def now_iso() -> str:
+    """The single `created_at`/`updated_at` timestamp format every writer in
+    this module (and the API routers built on it) uses — shared so
+    `JobRunner` and the Instances API don't each keep their own copy."""
+    return datetime.now(UTC).isoformat()
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS doc_hashes (
@@ -189,11 +198,24 @@ class InstanceRow:
     last_run_at: str | None
 
 
+# Shared by `get_instance`/`list_instances`: each instance's job count and
+# its most recent job's status/timestamp, computed the same way in both so
+# a row read singly and a row read as part of a list never disagree.
+_INSTANCE_JOB_SUMMARY_COLUMNS = """
+    (SELECT COUNT(*) FROM jobs j WHERE j.instance_id = i.id) AS job_count,
+    (SELECT j.status FROM jobs j WHERE j.instance_id = i.id
+     ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_status,
+    (SELECT j.created_at FROM jobs j WHERE j.instance_id = i.id
+     ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_run_at
+"""
+
+
 class InstanceStore:
     """The `instances` table (ADR-0025) — a catalog of source+sink recipes,
     never a partition of the graph itself (see spec §6.6). Deleting an
-    instance removes only this bookkeeping and its `jobs` rows; it never
-    touches Neo4j/Chroma."""
+    instance removes only this bookkeeping and its `jobs` rows (via the
+    `ON DELETE CASCADE` on `jobs.instance_id`); it never touches
+    Neo4j/Chroma."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -228,12 +250,7 @@ class InstanceStore:
     def get_instance(self, instance_id: str) -> InstanceRow | None:
         row = self._conn.execute(
             "SELECT i.id, i.name, i.source_type, i.source_path, i.sinks, "
-            "i.created_at, i.updated_at, "
-            "(SELECT COUNT(*) FROM jobs j WHERE j.instance_id = i.id), "
-            "(SELECT j.status FROM jobs j WHERE j.instance_id = i.id "
-            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1), "
-            "(SELECT j.created_at FROM jobs j WHERE j.instance_id = i.id "
-            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) "
+            f"i.created_at, i.updated_at, {_INSTANCE_JOB_SUMMARY_COLUMNS} "
             "FROM instances i WHERE i.id = ?",
             (instance_id,),
         ).fetchone()
@@ -244,12 +261,7 @@ class InstanceStore:
         sort by `created_at` instead, since they have no run to sort by."""
         rows = self._conn.execute(
             "SELECT i.id, i.name, i.source_type, i.source_path, i.sinks, "
-            "i.created_at, i.updated_at, "
-            "(SELECT COUNT(*) FROM jobs j WHERE j.instance_id = i.id) AS job_count, "
-            "(SELECT j.status FROM jobs j WHERE j.instance_id = i.id "
-            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_status, "
-            "(SELECT j.created_at FROM jobs j WHERE j.instance_id = i.id "
-            " ORDER BY j.created_at DESC, j.id DESC LIMIT 1) AS last_run_at "
+            f"i.created_at, i.updated_at, {_INSTANCE_JOB_SUMMARY_COLUMNS} "
             "FROM instances i "
             "ORDER BY COALESCE(last_run_at, i.created_at) DESC, i.id DESC"
         ).fetchall()
@@ -264,12 +276,14 @@ class InstanceStore:
             self._conn.commit()
 
     def delete_instance(self, instance_id: str) -> None:
-        """Catalog-only (ADR-0025): removes this instance's bookkeeping and
-        its `jobs` history rows. Never issues a Neo4j/Chroma write or
-        delete — the graph/vector data those jobs wrote is left exactly
-        as-is, untagged and unattributed, same as any orphaned content."""
+        """Catalog-only (ADR-0025): removes this instance's bookkeeping row.
+        Its `jobs` history rows go with it via `ON DELETE CASCADE` on
+        `jobs.instance_id` (enforced — `connect()` sets `PRAGMA foreign_keys
+        = ON`), not a second manual delete here. Never issues a Neo4j/Chroma
+        write or delete — the graph/vector data those jobs wrote is left
+        exactly as-is, untagged and unattributed, same as any orphaned
+        content."""
         with _WRITE_LOCK:
-            self._conn.execute("DELETE FROM jobs WHERE instance_id = ?", (instance_id,))
             self._conn.execute("DELETE FROM instances WHERE id = ?", (instance_id,))
             self._conn.commit()
 
@@ -388,7 +402,7 @@ class JobStore:
                     instance_id,
                     source_type,
                     source_path,
-                    json.dumps(sinks),
+                    json.dumps(sorted(sinks)),  # same canonical form InstanceStore uses
                     config_id,
                     created_at,
                     created_at,
